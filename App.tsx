@@ -1,0 +1,439 @@
+import { StatusBar } from 'expo-status-bar';
+import { makeRedirectUri } from 'expo-auth-session';
+import Constants from 'expo-constants';
+import * as Linking from 'expo-linking';
+import * as WebBrowser from 'expo-web-browser';
+import { useCallback, useEffect, useState, type ReactNode } from 'react';
+import {
+  ActivityIndicator,
+  Alert,
+  SafeAreaView,
+  StyleSheet,
+  Text,
+  View,
+} from 'react-native';
+import type { Session } from '@supabase/supabase-js';
+import { supabase, supabaseKey, supabaseUrl } from './src/lib/supabase';
+import { formatErrorMessage } from './src/lib/formatErrorMessage';
+import {
+  openEmailForInvitations,
+  openLineForInvitations,
+  shareInvitationLinksGeneric,
+} from './src/lib/invitationShare';
+import {
+  createFirstCircleAndInvites,
+  userExists,
+  userHasOwnerCircle,
+} from './src/lib/profileBootstrap';
+import { parseInvitationTokenFromUrl } from './src/lib/invitation-links';
+import { CirclesOnboardingScreen } from './src/screens/CirclesOnboardingScreen';
+import { HomeScreen } from './src/screens/HomeScreen';
+import { LoginScreen } from './src/screens/LoginScreen';
+
+WebBrowser.maybeCompleteAuthSession();
+
+export default function App() {
+  const [session, setSession] = useState<Session | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [connectionMessage, setConnectionMessage] = useState('尚未測試連線');
+  const [authRouteError, setAuthRouteError] = useState<string | null>(null);
+  const [hasOwnerCircle, setHasOwnerCircle] = useState<boolean | null>(null);
+  const [hasUserProfile, setHasUserProfile] = useState<boolean | null>(null);
+  const [routeLoading, setRouteLoading] = useState(false);
+  const [onboardingBusy, setOnboardingBusy] = useState(false);
+  const [acceptedInviteToken, setAcceptedInviteToken] = useState<string | null>(null);
+  const inviteBaseUrl = (Constants.expoConfig?.extra?.inviteBaseUrl as string | undefined)
+    ?? 'https://frislot.app/invite';
+
+  const refreshPostAuthRoute = useCallback(async (current: Session | null) => {
+    if (!current?.user) {
+      setHasOwnerCircle(null);
+      setHasUserProfile(null);
+      return;
+    }
+    setRouteLoading(true);
+    setAuthRouteError(null);
+    try {
+      const hasCircle = await userHasOwnerCircle(current.user.id);
+      const hasProfile = await userExists(current.user.id);
+      setHasOwnerCircle(hasCircle);
+      setHasUserProfile(hasProfile);
+    } catch (err) {
+      if (__DEV__) {
+        console.error('[bootstrap]', err);
+      }
+      setAuthRouteError(formatErrorMessage(err));
+      setHasOwnerCircle(null);
+      setHasUserProfile(null);
+    } finally {
+      setRouteLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data }) => {
+      setSession(data.session);
+    });
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, currentSession) => {
+      setSession(currentSession);
+      void refreshPostAuthRoute(currentSession);
+    });
+
+    return () => {
+      subscription.unsubscribe();
+    };
+  }, [refreshPostAuthRoute]);
+
+  useEffect(() => {
+    const consumeUrl = (url: string | null) => {
+      const token = parseInvitationTokenFromUrl(url);
+      if (token) {
+        setAcceptedInviteToken(token);
+      }
+    };
+
+    Linking.getInitialURL().then((url) => consumeUrl(url));
+    const sub = Linking.addEventListener('url', (event) => consumeUrl(event.url));
+
+    return () => {
+      sub.remove();
+    };
+  }, []);
+
+  const signInWithGoogle = async () => {
+    try {
+      setLoading(true);
+      setAuthRouteError(null);
+      const redirectTo = makeRedirectUri({
+        scheme: 'frislotnew',
+        path: 'auth/callback',
+      });
+
+      const { data, error } = await supabase.auth.signInWithOAuth({
+        provider: 'google',
+        options: {
+          redirectTo,
+          skipBrowserRedirect: true,
+        },
+      });
+
+      if (error) {
+        throw error;
+      }
+
+      if (!data?.url) {
+        throw new Error('Google OAuth URL was not generated.');
+      }
+
+      const result = await WebBrowser.openAuthSessionAsync(data.url, redirectTo);
+
+      if (result.type === 'success' && result.url) {
+        const { queryParams } = Linking.parse(result.url);
+        const code = queryParams?.code;
+        const errorDescription =
+          (typeof queryParams?.error_description === 'string' && queryParams.error_description) ||
+          (typeof queryParams?.error === 'string' && queryParams.error);
+
+        if (typeof code === 'string') {
+          const exchangeResult = await supabase.auth.exchangeCodeForSession(code);
+          if (exchangeResult.error) {
+            throw exchangeResult.error;
+          }
+          return;
+        }
+
+        const hash = result.url.split('#')[1] ?? '';
+        const hashParams = new URLSearchParams(hash);
+        const accessToken = hashParams.get('access_token');
+        const refreshToken = hashParams.get('refresh_token');
+
+        if (accessToken && refreshToken) {
+          const setSessionResult = await supabase.auth.setSession({
+            access_token: accessToken,
+            refresh_token: refreshToken,
+          });
+          if (setSessionResult.error) {
+            throw setSessionResult.error;
+          }
+          return;
+        }
+
+        if (errorDescription) {
+          throw new Error(errorDescription);
+        }
+      }
+
+      if (result.type !== 'cancel') {
+        Alert.alert('Login incomplete', 'Google sign-in did not return an auth code.');
+      }
+    } catch (err) {
+      Alert.alert('Google login failed', formatErrorMessage(err));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const signInWithEmail = async (email: string, password: string) => {
+    try {
+      setLoading(true);
+      setAuthRouteError(null);
+      const { error } = await supabase.auth.signInWithPassword({ email, password });
+      if (error) {
+        setAuthRouteError(error.message);
+        return;
+      }
+    } catch (err) {
+      setAuthRouteError(formatErrorMessage(err));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const sendPasswordReset = async (email: string) => {
+    try {
+      const { error } = await supabase.auth.resetPasswordForEmail(email);
+      if (error) {
+        Alert.alert('重設密碼', error.message);
+        return;
+      }
+      Alert.alert('重設密碼', '已寄出重設信，請檢查信箱');
+    } catch (err) {
+      Alert.alert('重設密碼', formatErrorMessage(err));
+    }
+  };
+
+  const signOut = async () => {
+    const { error } = await supabase.auth.signOut();
+    if (error) {
+      Alert.alert('Sign out failed', error.message);
+    }
+    setHasOwnerCircle(null);
+    setHasUserProfile(null);
+    setAuthRouteError(null);
+  };
+
+  const testSupabaseConnection = async () => {
+    try {
+      setTesting(true);
+      setConnectionMessage('測試中...');
+
+      const response = await fetch(`${supabaseUrl}/auth/v1/settings`, {
+        headers: {
+          apikey: supabaseKey,
+        },
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+
+      setConnectionMessage('連線成功：已可存取 Supabase Auth API');
+    } catch (err) {
+      setConnectionMessage(`連線失敗：${formatErrorMessage(err)}`);
+    } finally {
+      setTesting(false);
+    }
+  };
+
+  const handleOnboardingSubmit = async (payload: {
+    displayName: string;
+    phoneNumber: string;
+    circleName: string;
+    inviteEmails: string[];
+  }) => {
+    const user = session?.user;
+    if (!user) {
+      return;
+    }
+    try {
+      setOnboardingBusy(true);
+      const result = await createFirstCircleAndInvites({
+        uid: user.id,
+        email: user.email ?? null,
+        circleName: payload.circleName,
+        displayName: payload.displayName,
+        photoUrl:
+          (typeof user.user_metadata?.avatar_url === 'string' && user.user_metadata.avatar_url) ||
+          null,
+        phoneNumber: payload.phoneNumber,
+        inviteEmails: payload.inviteEmails,
+        inviteBaseUrl,
+        acceptedInviteToken,
+      });
+      setHasOwnerCircle(result.joinedViaInvitation ? false : true);
+      setHasUserProfile(true);
+      setAcceptedInviteToken(null);
+      if (result.invitationLinks.length > 0) {
+        Alert.alert('邀請已建立', '請選擇分享方式', [
+          {
+            text: 'Email',
+            onPress: () => {
+              void openEmailForInvitations(result.invitationLinks).catch((err) => {
+                Alert.alert('Email 分享失敗', formatErrorMessage(err));
+              });
+            },
+          },
+          {
+            text: 'LINE',
+            onPress: () => {
+              void openLineForInvitations(result.invitationLinks).catch((err) => {
+                Alert.alert('LINE 分享失敗', formatErrorMessage(err));
+              });
+            },
+          },
+          {
+            text: '更多分享',
+            onPress: () => {
+              void shareInvitationLinksGeneric(result.invitationLinks).catch((err) => {
+                Alert.alert('分享失敗', formatErrorMessage(err));
+              });
+            },
+          },
+          {
+            text: '稍後',
+            style: 'cancel',
+          },
+        ]);
+      }
+    } catch (err) {
+      Alert.alert('建立失敗', formatErrorMessage(err));
+    } finally {
+      setOnboardingBusy(false);
+    }
+  };
+
+  const handleOnboardingCancel = async () => {
+    const user = session?.user;
+    if (!user) {
+      return;
+    }
+    try {
+      setOnboardingBusy(true);
+      const profileExists = await userExists(user.id);
+      if (profileExists) {
+        setHasUserProfile(true);
+        return;
+      }
+      await signOut();
+    } catch (err) {
+      Alert.alert('取消失敗', formatErrorMessage(err));
+    } finally {
+      setOnboardingBusy(false);
+    }
+  };
+
+  const userLabel = session?.user.email ?? session?.user.id ?? '';
+
+  let body: ReactNode;
+  if (!session) {
+    body = (
+      <LoginScreen
+        busy={loading}
+        authError={authRouteError}
+        onGooglePress={signInWithGoogle}
+        onEmailSignIn={signInWithEmail}
+        onForgotPassword={sendPasswordReset}
+        devConnectionMessage={connectionMessage}
+        devTesting={testing}
+        onDevTestConnection={testSupabaseConnection}
+      />
+    );
+  } else if (
+    routeLoading ||
+    ((hasOwnerCircle === null || hasUserProfile === null) && !authRouteError)
+  ) {
+    body = (
+      <View style={styles.centered}>
+        <ActivityIndicator size="large" />
+        <Text style={styles.loadingText}>載入中…</Text>
+      </View>
+    );
+  } else if (session && authRouteError) {
+    body = (
+      <View style={styles.centered}>
+        <Text style={styles.routeErrTitle}>無法載入你的資料</Text>
+        <Text style={styles.routeErr}>{authRouteError}</Text>
+        <Text style={styles.routeErrHint}>
+          若訊息與資料表、權限或 RLS 有關，請到 Supabase 確認 public.users / circles / circle_members
+          是否存在，且已允許「已登入使用者」讀寫自己的列。
+        </Text>
+        <View style={styles.retryWrap}>
+          <Text
+            style={styles.retryLink}
+            onPress={() => void refreshPostAuthRoute(session)}
+          >
+            重試
+          </Text>
+        </View>
+      </View>
+    );
+  } else if (!hasOwnerCircle && !hasUserProfile) {
+    body = (
+      <CirclesOnboardingScreen
+        busy={onboardingBusy}
+        joiningViaInvitation={Boolean(acceptedInviteToken)}
+        onSubmit={handleOnboardingSubmit}
+        onCancel={handleOnboardingCancel}
+      />
+    );
+  } else {
+    body = <HomeScreen userLabel={userLabel} onSignOut={signOut} />;
+  }
+
+  return (
+    <SafeAreaView style={styles.container}>
+      {body}
+      <StatusBar style="auto" />
+    </SafeAreaView>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    backgroundColor: '#f8fafc',
+    padding: 24,
+  },
+  centered: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  loadingText: {
+    marginTop: 12,
+    color: '#64748b',
+  },
+  routeErr: {
+    marginTop: 12,
+    color: '#b91c1c',
+    textAlign: 'center',
+    paddingHorizontal: 16,
+  },
+  routeErrHint: {
+    marginTop: 16,
+    fontSize: 12,
+    color: '#64748b',
+    textAlign: 'center',
+    paddingHorizontal: 12,
+    lineHeight: 18,
+  },
+  routeErrTitle: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#334155',
+    textAlign: 'center',
+  },
+  retryWrap: {
+    marginTop: 20,
+  },
+  retryLink: {
+    color: '#2563eb',
+    fontSize: 16,
+    textAlign: 'center',
+    fontWeight: '600',
+  },
+});

@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>FriSlot 邀請</title>
+    <style>
+      body { font-family: Arial, sans-serif; background:#f8fafc; color:#1e293b; }
+      .card { max-width: 460px; margin: 40px auto; background:#fff; border-radius: 12px; padding: 20px; }
+      .muted { color:#64748b; font-size:14px; }
+      .error { color:#b91c1c; white-space: pre-wrap; }
+      .row { display:flex; gap:12px; margin-top:18px; }
+      button { border:0; border-radius:8px; padding:10px 16px; cursor:pointer; }
+      .accept { background:#2563eb; color:#fff; }
+      .reject { background:#64748b; color:#fff; }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <h2>FriSlot 邀請頁</h2>
+      <p id="summary" class="muted">載入中…</p>
+      <p id="status" class="muted"></p>
+      <p id="error" class="error"></p>
+      <div class="row">
+        <button id="accept" class="accept">接受邀請</button>
+        <button id="reject" class="reject">不接受</button>
+      </div>
+    </div>
+
+    <script>
+      // Replace with your real values before deployment.
+      const SUPABASE_URL = 'https://obebzwhqpfyvtnxtfzqc.supabase.co';
+      const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im9iZWJ6d2hxcGZ5dnRueHRmenFjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzc0NTU4NzMsImV4cCI6MjA5MzAzMTg3M30.oc6xgK_qCPHRExU3s9zTmL93YPAq5YHgKOa57nOMK5g';
+      const APP_DEEPLINK_SCHEME = 'frislotnew://invite?token=';
+      const IOS_STORE_URL = 'https://apps.apple.com';
+      const ANDROID_STORE_URL = 'https://play.google.com/store';
+
+      const params = new URLSearchParams(window.location.search);
+      const token = (params.get('token') || '').trim();
+      const summaryEl = document.getElementById('summary');
+      const statusEl = document.getElementById('status');
+      const errorEl = document.getElementById('error');
+      const acceptBtn = document.getElementById('accept');
+      const rejectBtn = document.getElementById('reject');
+
+      if (!token) {
+        errorEl.textContent = '無效邀請：缺少 token';
+        acceptBtn.disabled = true;
+        rejectBtn.disabled = true;
+      }
+
+      async function rpc(fn, body) {
+        const res = await fetch(`${SUPABASE_URL}/rest/v1/rpc/${fn}`, {
+          method: 'POST',
+          headers: {
+            apikey: SUPABASE_ANON_KEY,
+            Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(body),
+        });
+        if (!res.ok) {
+          const txt = await res.text();
+          throw new Error(txt || `HTTP ${res.status}`);
+        }
+        return res.json();
+      }
+
+      function openAppOrStore() {
+        const deepLink = `${APP_DEEPLINK_SCHEME}${encodeURIComponent(token)}`;
+        const fallback = /iphone|ipad|ipod/i.test(navigator.userAgent) ? IOS_STORE_URL : ANDROID_STORE_URL;
+        window.location.href = deepLink;
+        setTimeout(() => {
+          window.location.href = fallback;
+        }, 1200);
+      }
+
+      async function loadInvite() {
+        try {
+          const data = await rpc('get_invitation_by_token', { p_token: token });
+          const row = Array.isArray(data) ? data[0] : null;
+          if (!row) {
+            throw new Error('邀請不存在或已失效');
+          }
+          summaryEl.textContent = `你被邀請加入「${row.circle_name}」`;
+          statusEl.textContent = `目前狀態：${row.status}`;
+          if (row.status !== 'pending') {
+            acceptBtn.disabled = true;
+            rejectBtn.disabled = true;
+          }
+        } catch (err) {
+          errorEl.textContent = String(err.message || err);
+          acceptBtn.disabled = true;
+          rejectBtn.disabled = true;
+        }
+      }
+
+      async function respond(action) {
+        try {
+          errorEl.textContent = '';
+          const data = await rpc('respond_invitation', { p_token: token, p_action: action });
+          const row = Array.isArray(data) ? data[0] : null;
+          if (!row) {
+            throw new Error('更新邀請狀態失敗');
+          }
+          statusEl.textContent = `目前狀態：${row.status}`;
+          acceptBtn.disabled = true;
+          rejectBtn.disabled = true;
+
+          if (action === 'accept') {
+            openAppOrStore();
+          }
+        } catch (err) {
+          errorEl.textContent = String(err.message || err);
+        }
+      }
+
+      acceptBtn.addEventListener('click', () => respond('accept'));
+      rejectBtn.addEventListener('click', () => respond('reject'));
+      loadInvite();
+    </script>
+  </body>
+  </html>

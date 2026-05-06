@@ -1,0 +1,39 @@
+{
+  "expo": {
+    "name": "FriSlot_New",
+    "slug": "FriSlot_New",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "newArchEnabled": true,
+    "splash": {
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#ffffff"
+    },
+    "scheme": "frislotnew",
+    "ios": {
+      "supportsTablet": true
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#ffffff"
+      },
+      "edgeToEdgeEnabled": true,
+      "predictiveBackGestureEnabled": false
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "extra": {
+      "supabaseUrl": "https://obebzwhqpfyvtnxtfzqc.supabase.co",
+      "supabaseAnonKey": "sb_publishable_tMANYfhtc0HVym1qForu_g_h3m1fbxo",
+      "inviteBaseUrl": "https://frislot.app/invite"
+    },
+    "plugins": [
+      "expo-web-browser"
+    ]
+  }
+}
