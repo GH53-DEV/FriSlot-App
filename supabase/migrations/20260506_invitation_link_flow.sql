@@ -1,7 +1,5 @@
 -- Invitations phase 2: tokenized links + response lifecycle + claim flow
 
-create extension if not exists pgcrypto;
-
 alter table if exists public.invitations
   add column if not exists invite_token text,
   add column if not exists responded_at timestamptz,
@@ -52,7 +50,7 @@ begin
       continue;
     end if;
 
-    v_token := encode(gen_random_bytes(16), 'hex');
+    v_token := md5(random()::text || clock_timestamp()::text || v_email || auth.uid()::text);
 
     insert into public.invitations(
       circle_ref,
@@ -181,17 +179,15 @@ begin
 
   update public.invitations i
   set
-    status = 'accepted',
-    responded_at = coalesce(i.responded_at, now()),
     accepted_by_uid = p_uid
   where i.invite_token = p_token
-    and i.status in ('pending', 'accepted')
+    and i.status = 'accepted'
     and lower(i.invited_email) = v_email
   returning i.id, i.circle_ref, i.status
   into invitation_id, circle_ref, status;
 
   if invitation_id is null then
-    raise exception 'Invitation token invalid or email mismatch';
+    raise exception 'Invitation must be accepted before claim';
   end if;
 
   insert into public.circle_members(circle_ref, user_id, role, status, joined_at)

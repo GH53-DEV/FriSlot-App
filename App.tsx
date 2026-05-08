@@ -3,7 +3,7 @@ import { makeRedirectUri } from 'expo-auth-session';
 import Constants from 'expo-constants';
 import * as Linking from 'expo-linking';
 import * as WebBrowser from 'expo-web-browser';
-import { useCallback, useEffect, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -15,12 +15,14 @@ import {
 import type { Session } from '@supabase/supabase-js';
 import { supabase, supabaseKey, supabaseUrl } from './src/lib/supabase';
 import { formatErrorMessage } from './src/lib/formatErrorMessage';
+import { dispatchInvitationEmails } from './src/lib/invitationEmailDispatch';
 import {
   openEmailForInvitations,
   openLineForInvitations,
   shareInvitationLinksGeneric,
 } from './src/lib/invitationShare';
 import {
+  claimInvitationForExistingProfile,
   createFirstCircleAndInvites,
   userExists,
   userHasOwnerCircle,
@@ -43,8 +45,15 @@ export default function App() {
   const [routeLoading, setRouteLoading] = useState(false);
   const [onboardingBusy, setOnboardingBusy] = useState(false);
   const [acceptedInviteToken, setAcceptedInviteToken] = useState<string | null>(null);
+  const claimingInviteTokenRef = useRef<string | null>(null);
   const inviteBaseUrl = (Constants.expoConfig?.extra?.inviteBaseUrl as string | undefined)
     ?? 'https://frislot.app/invite';
+  const invitationEmailSubjectTemplate =
+    (Constants.expoConfig?.extra?.invitationEmailSubject as string | undefined) ||
+    'FriSlot 邀請你加入 {{circle_name}}';
+  const invitationEmailBodyTemplate =
+    (Constants.expoConfig?.extra?.invitationEmailBody as string | undefined) ||
+    '嗨，\n\n{{owner_email}} 邀請你加入 FriSlot 密友圈：{{circle_name}}\n請點擊連結：{{invite_url}}\n';
 
   const refreshPostAuthRoute = useCallback(async (current: Session | null) => {
     if (!current?.user) {
@@ -103,6 +112,49 @@ export default function App() {
       sub.remove();
     };
   }, []);
+
+  useEffect(() => {
+    const user = session?.user;
+    if (!user || !acceptedInviteToken || hasUserProfile !== true) {
+      return;
+    }
+    if (claimingInviteTokenRef.current === acceptedInviteToken) {
+      return;
+    }
+
+    claimingInviteTokenRef.current = acceptedInviteToken;
+    let cancelled = false;
+
+    const claimNow = async () => {
+      try {
+        setRouteLoading(true);
+        await claimInvitationForExistingProfile({
+          uid: user.id,
+          email: user.email ?? '',
+          token: acceptedInviteToken,
+        });
+        if (cancelled) {
+          return;
+        }
+        setAcceptedInviteToken(null);
+        await refreshPostAuthRoute(session);
+      } catch (err) {
+        if (!cancelled) {
+          Alert.alert('邀請處理失敗', formatErrorMessage(err));
+        }
+      } finally {
+        if (!cancelled) {
+          setRouteLoading(false);
+        }
+        claimingInviteTokenRef.current = null;
+      }
+    };
+
+    void claimNow();
+    return () => {
+      cancelled = true;
+    };
+  }, [acceptedInviteToken, hasUserProfile, refreshPostAuthRoute, session]);
 
   const signInWithGoogle = async () => {
     try {
@@ -268,6 +320,13 @@ export default function App() {
       setHasUserProfile(true);
       setAcceptedInviteToken(null);
       if (result.invitationLinks.length > 0) {
+        await dispatchInvitationEmails({
+          ownerEmail: user.email ?? '',
+          circleName: payload.circleName,
+          subjectTemplate: invitationEmailSubjectTemplate,
+          bodyTemplate: invitationEmailBodyTemplate,
+          invitations: result.invitationPayloads,
+        });
         Alert.alert('邀請已建立', '請選擇分享方式', [
           {
             text: 'Email',

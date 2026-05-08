@@ -30,7 +30,7 @@
     "extra": {
       "supabaseUrl": "https://obebzwhqpfyvtnxtfzqc.supabase.co",
       "supabaseAnonKey": "sb_publishable_tMANYfhtc0HVym1qForu_g_h3m1fbxo",
-      "inviteBaseUrl": "https://frislot.app/invite"
+      "inviteBaseUrl": "https://gh53-dev.github.io/FriSlot-App/invite"
     },
     "plugins": [
       "expo-web-browser"

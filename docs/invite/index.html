@@ -74,7 +74,6 @@
         const fallback = /iphone|ipad|ipod/i.test(navigator.userAgent) ? IOS_STORE_URL : ANDROID_STORE_URL;
         // Android browsers inside LINE can be stricter; try intent URL first.
         if (/android/i.test(navigator.userAgent)) {
-          const encoded = encodeURIComponent(deepLink);
           window.location.href = `intent://invite?token=${encodeURIComponent(token)}#Intent;scheme=frislotnew;package=host.exp.exponent;S.browser_fallback_url=${encodeURIComponent(fallback)};end`;
           setTimeout(() => {
             window.location.href = deepLink;

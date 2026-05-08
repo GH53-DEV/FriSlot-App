@@ -81,6 +81,29 @@ export async function userExists(uid: string): Promise<boolean> {
   return data != null;
 }
 
+export async function claimInvitationForExistingProfile(input: {
+  uid: string;
+  email: string;
+  token: string;
+}) {
+  const { data, error } = await supabase.rpc('claim_accepted_invitation', {
+    p_token: input.token,
+    p_uid: input.uid,
+    p_email: input.email,
+  });
+
+  if (error) {
+    throw error;
+  }
+
+  const row = Array.isArray(data) && data.length > 0 ? data[0] : null;
+  return {
+    invitationId: row?.invitation_id ?? null,
+    circleRef: row?.circle_ref ?? null,
+    status: row?.status ?? null,
+  };
+}
+
 export type CreateFirstCircleInput = {
   uid: string;
   email?: string | null;
@@ -91,6 +114,11 @@ export type CreateFirstCircleInput = {
   inviteEmails: string[];
   inviteBaseUrl: string;
   acceptedInviteToken?: string | null;
+};
+
+export type InvitationLinkPayload = {
+  invitedEmail: string;
+  inviteUrl: string;
 };
 
 export async function createFirstCircleAndInvites(input: CreateFirstCircleInput) {
@@ -126,7 +154,8 @@ export async function createFirstCircleAndInvites(input: CreateFirstCircleInput)
         : undefined;
     return {
       circleId: circleIdFromClaim ?? null,
-      invitationLinks: [],
+      invitationLinks: [] as string[],
+      invitationPayloads: [] as InvitationLinkPayload[],
       joinedViaInvitation: true,
     };
   }
@@ -143,7 +172,12 @@ export async function createFirstCircleAndInvites(input: CreateFirstCircleInput)
   }
 
   if (existing) {
-    return { circleId: existing.id as string, invitationLinks: [], joinedViaInvitation: false };
+    return {
+      circleId: existing.id as string,
+      invitationLinks: [] as string[],
+      invitationPayloads: [] as InvitationLinkPayload[],
+      joinedViaInvitation: false,
+    };
   }
 
   const { data: circle, error: cErr } = await supabase
@@ -176,7 +210,12 @@ export async function createFirstCircleAndInvites(input: CreateFirstCircleInput)
 
   const emails = input.inviteEmails.map((e) => e.trim().toLowerCase()).filter(Boolean);
   if (emails.length === 0) {
-    return { circleId, invitationLinks: [], joinedViaInvitation: false };
+    return {
+      circleId,
+      invitationLinks: [] as string[],
+      invitationPayloads: [] as InvitationLinkPayload[],
+      joinedViaInvitation: false,
+    };
   }
 
   const { data: linksData, error: linksErr } = await supabase.rpc('create_invitation_links', {
@@ -189,12 +228,20 @@ export async function createFirstCircleAndInvites(input: CreateFirstCircleInput)
     throw linksErr;
   }
 
-  const invitationLinks =
+  const invitationPayloads: InvitationLinkPayload[] =
     Array.isArray(linksData) && linksData.length > 0
       ? linksData
-          .map((row) => (typeof row.invite_url === 'string' ? row.invite_url : ''))
-          .filter(Boolean)
+          .map((row) => ({
+            invitedEmail: typeof row.invited_email === 'string' ? row.invited_email : '',
+            inviteUrl: typeof row.invite_url === 'string' ? row.invite_url : '',
+          }))
+          .filter((row) => row.invitedEmail && row.inviteUrl)
       : [];
 
-  return { circleId, invitationLinks, joinedViaInvitation: false };
+  return {
+    circleId,
+    invitationLinks: invitationPayloads.map((row) => row.inviteUrl),
+    invitationPayloads,
+    joinedViaInvitation: false,
+  };
 }
