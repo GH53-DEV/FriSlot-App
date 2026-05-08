@@ -17,6 +17,7 @@ export type CirclesOnboardingScreenProps = {
     phoneNumber: string;
     circleName: string;
     inviteEmails: string[];
+    inviteMethod: 'none' | 'line' | 'email';
   }) => Promise<void>;
   onCancel: () => Promise<void>;
 };
@@ -33,6 +34,7 @@ export function CirclesOnboardingScreen({
   const [invite1, setInvite1] = useState('');
   const [invite2, setInvite2] = useState('');
   const [invite3, setInvite3] = useState('');
+  const [inviteMode, setInviteMode] = useState<'none' | 'line' | 'email'>('none');
 
   const clearForm = () => {
     setDisplayName('');
@@ -48,11 +50,17 @@ export function CirclesOnboardingScreen({
       Alert.alert('建立密友圈', '請輸入圈名');
       return;
     }
+    const normalizedEmails = [invite1, invite2, invite3].map((v) => v.trim()).filter(Boolean);
+    if (!joiningViaInvitation && inviteMode !== 'none' && normalizedEmails.length === 0) {
+      Alert.alert('邀請密友', '已選擇邀請方式，請至少輸入 1 組 email。');
+      return;
+    }
     await onSubmit({
       displayName,
       phoneNumber,
       circleName,
       inviteEmails: [invite1, invite2, invite3],
+      inviteMethod: inviteMode,
     });
   };
 
@@ -94,34 +102,60 @@ export function CirclesOnboardingScreen({
               editable={!busy}
             />
 
-            <Text style={styles.section}>邀請密友（選填，最多三組 email）</Text>
-            <TextInput
-              style={styles.input}
-              value={invite1}
-              onChangeText={setInvite1}
-              placeholder="密友 1 email"
-              autoCapitalize="none"
-              keyboardType="email-address"
-              editable={!busy}
-            />
-            <TextInput
-              style={styles.input}
-              value={invite2}
-              onChangeText={setInvite2}
-              placeholder="密友 2 email"
-              autoCapitalize="none"
-              keyboardType="email-address"
-              editable={!busy}
-            />
-            <TextInput
-              style={styles.input}
-              value={invite3}
-              onChangeText={setInvite3}
-              placeholder="密友 3 email"
-              autoCapitalize="none"
-              keyboardType="email-address"
-              editable={!busy}
-            />
+            <Text style={styles.section}>邀請密友（選填）</Text>
+            <Text style={styles.inviteHint}>點選方式後才會顯示對應欄位</Text>
+            <View style={styles.inviteMethodRow}>
+              <View style={styles.methodBtn}>
+                <Button
+                  title="LINE"
+                  onPress={() => setInviteMode('line')}
+                  disabled={busy}
+                  color={inviteMode === 'line' ? '#7c3aed' : '#64748b'}
+                />
+              </View>
+              <View style={styles.methodBtn}>
+                <Button
+                  title="Email"
+                  onPress={() => setInviteMode('email')}
+                  disabled={busy}
+                  color={inviteMode === 'email' ? '#7c3aed' : '#64748b'}
+                />
+              </View>
+            </View>
+            {inviteMode === 'line' ? (
+              <Text style={styles.inviteHint}>建立後會直接開 LINE 分享，仍需填 email 才能建立 invitations 紀錄。</Text>
+            ) : null}
+            {inviteMode !== 'none' ? (
+              <>
+                <TextInput
+                  style={styles.input}
+                  value={invite1}
+                  onChangeText={setInvite1}
+                  placeholder="密友 1 email"
+                  autoCapitalize="none"
+                  keyboardType="email-address"
+                  editable={!busy}
+                />
+                <TextInput
+                  style={styles.input}
+                  value={invite2}
+                  onChangeText={setInvite2}
+                  placeholder="密友 2 email"
+                  autoCapitalize="none"
+                  keyboardType="email-address"
+                  editable={!busy}
+                />
+                <TextInput
+                  style={styles.input}
+                  value={invite3}
+                  onChangeText={setInvite3}
+                  placeholder="密友 3 email"
+                  autoCapitalize="none"
+                  keyboardType="email-address"
+                  editable={!busy}
+                />
+              </>
+            ) : null}
           </>
         )}
 
@@ -168,6 +202,19 @@ const styles = StyleSheet.create({
     marginTop: 8,
     marginBottom: 8,
     color: '#334155',
+  },
+  inviteHint: {
+    fontSize: 12,
+    color: '#64748b',
+    marginBottom: 10,
+  },
+  inviteMethodRow: {
+    flexDirection: 'row',
+    gap: 12,
+    marginBottom: 12,
+  },
+  methodBtn: {
+    flex: 1,
   },
   label: {
     fontSize: 12,

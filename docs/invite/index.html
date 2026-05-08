@@ -34,8 +34,15 @@
       const SUPABASE_URL = 'https://obebzwhqpfyvtnxtfzqc.supabase.co';
       const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im9iZWJ6d2hxcGZ5dnRueHRmenFjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzc0NTU4NzMsImV4cCI6MjA5MzAzMTg3M30.oc6xgK_qCPHRExU3s9zTmL93YPAq5YHgKOa57nOMK5g';
       const APP_DEEPLINK_SCHEME = 'frislotnew://invite?token=';
-      const IOS_STORE_URL = 'https://apps.apple.com';
-      const ANDROID_STORE_URL = 'https://play.google.com/store';
+      // Update these after app release.
+      const IOS_APP_ID = '';
+      const ANDROID_APP_PACKAGE = '';
+      const IOS_STORE_URL = IOS_APP_ID
+        ? `https://apps.apple.com/app/id${encodeURIComponent(IOS_APP_ID)}`
+        : 'https://apps.apple.com';
+      const ANDROID_STORE_URL = ANDROID_APP_PACKAGE
+        ? `https://play.google.com/store/apps/details?id=${encodeURIComponent(ANDROID_APP_PACKAGE)}`
+        : 'https://play.google.com/store';
 
       const params = new URLSearchParams(window.location.search);
       const token = (params.get('token') || '').trim();
@@ -45,6 +52,8 @@
       const acceptBtn = document.getElementById('accept');
       const rejectBtn = document.getElementById('reject');
       const openAppBtn = document.getElementById('openApp');
+      let responded = false;
+      let submitInFlight = false;
 
       if (!token) {
         errorEl.textContent = '無效邀請：缺少 token';
@@ -67,6 +76,24 @@
           throw new Error(txt || `HTTP ${res.status}`);
         }
         return res.json();
+      }
+
+      function setButtonsEnabled(enabled) {
+        acceptBtn.disabled = !enabled;
+        rejectBtn.disabled = !enabled;
+      }
+
+      function formatRpcError(err) {
+        const message = String(err && err.message ? err.message : err || '');
+        try {
+          const parsed = JSON.parse(message);
+          if (parsed && typeof parsed.message === 'string') {
+            return parsed.message;
+          }
+        } catch (_) {
+          // Keep original message if it is not JSON.
+        }
+        return message;
       }
 
       function openAppOrStore() {
@@ -93,37 +120,51 @@
           if (!row) {
             throw new Error('邀請不存在或已失效');
           }
-          summaryEl.textContent = `你被邀請加入「${row.circle_name}」`;
+          const inviter = row.inviter_name || row.inviter_email || '好友';
+          summaryEl.textContent = `${inviter} 邀請你加入「${row.circle_name}」`;
           statusEl.textContent = `目前狀態：${row.status}`;
           if (row.status !== 'pending') {
-            acceptBtn.disabled = true;
-            rejectBtn.disabled = true;
+            responded = true;
+            setButtonsEnabled(false);
           }
         } catch (err) {
-          errorEl.textContent = String(err.message || err);
-          acceptBtn.disabled = true;
-          rejectBtn.disabled = true;
+          errorEl.textContent = formatRpcError(err);
+          setButtonsEnabled(false);
         }
       }
 
       async function respond(action) {
+        if (responded || submitInFlight) {
+          return;
+        }
         try {
+          submitInFlight = true;
+          setButtonsEnabled(false);
           errorEl.textContent = '';
           const data = await rpc('respond_invitation', { p_token: token, p_action: action });
           const row = Array.isArray(data) ? data[0] : null;
           if (!row) {
             throw new Error('更新邀請狀態失敗');
           }
+          responded = true;
           statusEl.textContent = `目前狀態：${row.status}`;
-          acceptBtn.disabled = true;
-          rejectBtn.disabled = true;
 
           if (action === 'accept') {
             openAppBtn.style.display = 'inline-block';
             openAppOrStore();
           }
         } catch (err) {
-          errorEl.textContent = String(err.message || err);
+          errorEl.textContent = formatRpcError(err);
+          submitInFlight = false;
+          if (!responded) {
+            setButtonsEnabled(true);
+          }
+          return;
+        } finally {
+          if (responded) {
+            submitInFlight = false;
+            setButtonsEnabled(false);
+          }
         }
       }
 

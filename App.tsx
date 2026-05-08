@@ -15,7 +15,7 @@ import {
 import type { Session } from '@supabase/supabase-js';
 import { supabase, supabaseKey, supabaseUrl } from './src/lib/supabase';
 import { formatErrorMessage } from './src/lib/formatErrorMessage';
-import { dispatchInvitationEmails } from './src/lib/invitationEmailDispatch';
+import { dispatchInvitationEmails, getInvitationEmailTemplates } from './src/lib/invitationEmailDispatch';
 import {
   openEmailForInvitations,
   openLineForInvitations,
@@ -48,12 +48,45 @@ export default function App() {
   const claimingInviteTokenRef = useRef<string | null>(null);
   const inviteBaseUrl = (Constants.expoConfig?.extra?.inviteBaseUrl as string | undefined)
     ?? 'https://frislot.app/invite';
-  const invitationEmailSubjectTemplate =
-    (Constants.expoConfig?.extra?.invitationEmailSubject as string | undefined) ||
-    'FriSlot 邀請你加入 {{circle_name}}';
-  const invitationEmailBodyTemplate =
-    (Constants.expoConfig?.extra?.invitationEmailBody as string | undefined) ||
-    '嗨，\n\n{{owner_email}} 邀請你加入 FriSlot 密友圈：{{circle_name}}\n請點擊連結：{{invite_url}}\n';
+
+  const promptShareOptions = async (invitationLinks: string[]) => {
+    await new Promise<void>((resolve) => {
+      Alert.alert('邀請已建立', '請選擇分享方式', [
+        {
+          text: 'Email',
+          onPress: () => {
+            void openEmailForInvitations(invitationLinks).catch((err) => {
+              Alert.alert('Email 分享失敗', formatErrorMessage(err));
+            });
+            resolve();
+          },
+        },
+        {
+          text: 'LINE',
+          onPress: () => {
+            void openLineForInvitations(invitationLinks).catch((err) => {
+              Alert.alert('LINE 分享失敗', formatErrorMessage(err));
+            });
+            resolve();
+          },
+        },
+        {
+          text: '更多分享',
+          onPress: () => {
+            void shareInvitationLinksGeneric(invitationLinks).catch((err) => {
+              Alert.alert('分享失敗', formatErrorMessage(err));
+            });
+            resolve();
+          },
+        },
+        {
+          text: '稍後',
+          style: 'cancel',
+          onPress: () => resolve(),
+        },
+      ]);
+    });
+  };
 
   const refreshPostAuthRoute = useCallback(async (current: Session | null) => {
     if (!current?.user) {
@@ -296,6 +329,7 @@ export default function App() {
     phoneNumber: string;
     circleName: string;
     inviteEmails: string[];
+    inviteMethod: 'none' | 'line' | 'email';
   }) => {
     const user = session?.user;
     if (!user) {
@@ -316,48 +350,47 @@ export default function App() {
         inviteBaseUrl,
         acceptedInviteToken,
       });
+      let emailDispatchWarning: string | null = null;
+      if (result.invitationLinks.length > 0) {
+        try {
+          if (payload.inviteMethod === 'email') {
+            const templates = await getInvitationEmailTemplates();
+            await dispatchInvitationEmails({
+              ownerEmail: user.email ?? '',
+              circleName: payload.circleName,
+              subjectTemplate: templates.subjectTemplate,
+              bodyTemplate: templates.bodyTemplate,
+              invitations: result.invitationPayloads,
+            });
+            Alert.alert('邀請已建立', '已依 email 方式送出邀請。');
+          } else if (payload.inviteMethod === 'line') {
+            await openLineForInvitations(result.invitationLinks);
+          } else {
+            const templates = await getInvitationEmailTemplates();
+            await dispatchInvitationEmails({
+              ownerEmail: user.email ?? '',
+              circleName: payload.circleName,
+              subjectTemplate: templates.subjectTemplate,
+              bodyTemplate: templates.bodyTemplate,
+              invitations: result.invitationPayloads,
+            });
+            await promptShareOptions(result.invitationLinks);
+          }
+        } catch (err) {
+          emailDispatchWarning = formatErrorMessage(err);
+        }
+
+        if (emailDispatchWarning) {
+          Alert.alert(
+            '邀請信寄送失敗',
+            `密友圈已建立成功，但自動寄信失敗。\n\n${emailDispatchWarning}\n\n你仍可用下方方式手動分享邀請連結。`,
+          );
+          await promptShareOptions(result.invitationLinks);
+        }
+      }
       setHasOwnerCircle(result.joinedViaInvitation ? false : true);
       setHasUserProfile(true);
       setAcceptedInviteToken(null);
-      if (result.invitationLinks.length > 0) {
-        await dispatchInvitationEmails({
-          ownerEmail: user.email ?? '',
-          circleName: payload.circleName,
-          subjectTemplate: invitationEmailSubjectTemplate,
-          bodyTemplate: invitationEmailBodyTemplate,
-          invitations: result.invitationPayloads,
-        });
-        Alert.alert('邀請已建立', '請選擇分享方式', [
-          {
-            text: 'Email',
-            onPress: () => {
-              void openEmailForInvitations(result.invitationLinks).catch((err) => {
-                Alert.alert('Email 分享失敗', formatErrorMessage(err));
-              });
-            },
-          },
-          {
-            text: 'LINE',
-            onPress: () => {
-              void openLineForInvitations(result.invitationLinks).catch((err) => {
-                Alert.alert('LINE 分享失敗', formatErrorMessage(err));
-              });
-            },
-          },
-          {
-            text: '更多分享',
-            onPress: () => {
-              void shareInvitationLinksGeneric(result.invitationLinks).catch((err) => {
-                Alert.alert('分享失敗', formatErrorMessage(err));
-              });
-            },
-          },
-          {
-            text: '稍後',
-            style: 'cancel',
-          },
-        ]);
-      }
     } catch (err) {
       Alert.alert('建立失敗', formatErrorMessage(err));
     } finally {
