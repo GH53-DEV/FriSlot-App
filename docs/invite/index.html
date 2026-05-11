@@ -5,60 +5,268 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>FriSlot 邀請</title>
     <style>
-      body { font-family: Arial, sans-serif; background:#f8fafc; color:#1e293b; }
-      .card { max-width: 460px; margin: 40px auto; background:#fff; border-radius: 12px; padding: 20px; }
-      .muted { color:#64748b; font-size:14px; }
-      .error { color:#b91c1c; white-space: pre-wrap; }
-      .row { display:flex; gap:12px; margin-top:18px; }
-      button { border:0; border-radius:8px; padding:10px 16px; cursor:pointer; }
-      .accept { background:#2563eb; color:#fff; }
-      .reject { background:#64748b; color:#fff; }
-      .open-app { background:#0f766e; color:#fff; margin-top:12px; display:none; }
+      :root {
+        --paper-bg: #fffdf6;
+        --paper-edge: #d6c69a;
+        --ink: #1f2937;
+        --muted: #6b7280;
+        --accept: #2563eb;
+        --reject: #94a3b8;
+        --android: #16a34a;
+        --ios: #0f172a;
+        --have: #0f766e;
+        --danger: #b91c1c;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        font-family: -apple-system, "Noto Sans TC", "Microsoft JhengHei", Arial, sans-serif;
+        background: linear-gradient(135deg, #fdf2f8 0%, #ecfeff 100%);
+        color: var(--ink);
+        min-height: 100vh;
+        padding: 32px 16px;
+      }
+      .wrap { max-width: 480px; margin: 0 auto; }
+
+      /* 紙本風邀請函外框 */
+      .invitation-card {
+        position: relative;
+        background: var(--paper-bg);
+        border: 1px solid var(--paper-edge);
+        border-radius: 6px;
+        padding: 32px 28px 28px;
+        box-shadow:
+          0 1px 0 #fff inset,
+          0 10px 30px rgba(15, 23, 42, 0.08),
+          0 2px 6px rgba(15, 23, 42, 0.06);
+      }
+      .invitation-card::before,
+      .invitation-card::after {
+        content: "";
+        position: absolute;
+        left: 14px;
+        right: 14px;
+        height: 6px;
+        border-left: 1px dashed var(--paper-edge);
+        border-right: 1px dashed var(--paper-edge);
+      }
+      .invitation-card::before { top: 10px; border-top: 1px dashed var(--paper-edge); }
+      .invitation-card::after  { bottom: 10px; border-bottom: 1px dashed var(--paper-edge); }
+      .invitation-card .ribbon {
+        display: inline-block;
+        font-size: 12px;
+        letter-spacing: 4px;
+        color: #b45309;
+        background: #fef3c7;
+        padding: 4px 10px;
+        border-radius: 999px;
+        margin-bottom: 12px;
+      }
+      .invitation-card h1 {
+        font-size: 22px;
+        line-height: 1.4;
+        margin: 4px 0 14px;
+        color: #111827;
+      }
+      .invitation-card .message {
+        font-size: 15px;
+        line-height: 1.8;
+        color: #334155;
+        white-space: pre-wrap;
+        margin-bottom: 18px;
+      }
+      .invitation-card .footer {
+        font-size: 12px;
+        color: var(--muted);
+        text-align: right;
+        border-top: 1px dashed var(--paper-edge);
+        padding-top: 10px;
+        margin-top: 6px;
+      }
+      .invitation-card .status {
+        font-size: 13px;
+        color: var(--muted);
+        margin-top: 10px;
+      }
+      .error {
+        margin-top: 12px;
+        color: var(--danger);
+        font-size: 14px;
+        white-space: pre-wrap;
+      }
+
+      .actions {
+        margin-top: 18px;
+        display: flex;
+        gap: 12px;
+      }
+      .actions button {
+        flex: 1;
+        font-size: 15px;
+        padding: 12px 14px;
+        border-radius: 10px;
+        border: 0;
+        cursor: pointer;
+        font-weight: 600;
+      }
+      .accept { background: var(--accept); color: #fff; }
+      .reject { background: var(--reject); color: #fff; }
+      .accept:disabled, .reject:disabled { opacity: 0.55; cursor: not-allowed; }
+
+      /* 社群分享流程：接受後補 email */
+      .email-form {
+        margin-top: 18px;
+        display: none;
+      }
+      .email-form.show { display: block; }
+      .email-form label {
+        display: block;
+        font-size: 13px;
+        color: var(--muted);
+        margin-bottom: 6px;
+      }
+      .email-form input {
+        width: 100%;
+        font-size: 16px;
+        padding: 11px 12px;
+        border: 1px solid #cbd5e1;
+        border-radius: 8px;
+        background: #fff;
+      }
+      .email-form .submit {
+        margin-top: 12px;
+        width: 100%;
+        background: var(--accept);
+        color: #fff;
+        font-weight: 600;
+        padding: 12px;
+        border: 0;
+        border-radius: 10px;
+        cursor: pointer;
+      }
+      .email-form .submit:disabled { opacity: 0.55; cursor: not-allowed; }
+      .email-form .hint { font-size: 12px; color: var(--muted); margin-top: 6px; }
+
+      /* 接受後的 3 個安裝引導按鈕 */
+      .install {
+        margin-top: 18px;
+        display: none;
+      }
+      .install.show { display: block; }
+      .install .install-hint {
+        font-size: 13px;
+        color: var(--muted);
+        margin-bottom: 10px;
+      }
+      .install .btn-row {
+        display: grid;
+        grid-template-columns: 1fr;
+        gap: 10px;
+      }
+      .install button {
+        font-size: 15px;
+        padding: 12px;
+        border: 0;
+        border-radius: 10px;
+        cursor: pointer;
+        color: #fff;
+        font-weight: 600;
+        text-align: center;
+      }
+      .install .android { background: var(--android); }
+      .install .ios     { background: var(--ios); }
+      .install .have    { background: var(--have); }
+      @media (min-width: 420px) {
+        .install .btn-row { grid-template-columns: 1fr 1fr 1fr; }
+      }
     </style>
   </head>
   <body>
-    <div class="card">
-      <h2>FriSlot 邀請頁</h2>
-      <p id="summary" class="muted">載入中…</p>
-      <p id="status" class="muted"></p>
-      <p id="error" class="error"></p>
-      <div class="row">
-        <button id="accept" class="accept">接受邀請</button>
-        <button id="reject" class="reject">不接受</button>
+    <div class="wrap">
+      <div class="invitation-card">
+        <span class="ribbon">FriSlot 邀請函</span>
+        <h1 id="title">載入中…</h1>
+        <div class="message" id="message"></div>
+        <div class="footer" id="footer"></div>
+        <div class="status" id="status"></div>
+        <div class="error" id="error"></div>
+
+        <div class="actions" id="actions">
+          <button id="accept" class="accept">接受邀請</button>
+          <button id="reject" class="reject">不接受</button>
+        </div>
+
+        <div class="email-form" id="emailForm">
+          <label for="emailInput">請填寫你的 email 完成接受</label>
+          <input id="emailInput" type="email" placeholder="email" autocomplete="email" />
+          <button id="emailSubmit" class="submit">回傳並接受邀請</button>
+          <p class="hint">填入的 email 會與此邀請綁定，方便日後登入認領圈子。</p>
+        </div>
+
+        <div class="install" id="install">
+          <p class="install-hint" id="installHint">接受邀請後，請依下列方式繼續：</p>
+          <div class="btn-row">
+            <button id="btnAndroid" class="android">Google Play 安裝</button>
+            <button id="btnIos" class="ios">Apple Store 安裝</button>
+            <button id="btnHave" class="have">已擁有 FriSlot</button>
+          </div>
+        </div>
       </div>
-      <button id="openApp" class="open-app">手動開啟 App</button>
     </div>
 
     <script>
-      // Replace with your real values before deployment.
+      // 部署前請依環境替換。
       const SUPABASE_URL = 'https://obebzwhqpfyvtnxtfzqc.supabase.co';
       const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im9iZWJ6d2hxcGZ5dnRueHRmenFjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzc0NTU4NzMsImV4cCI6MjA5MzAzMTg3M30.oc6xgK_qCPHRExU3s9zTmL93YPAq5YHgKOa57nOMK5g';
       const APP_DEEPLINK_SCHEME = 'frislotnew://invite?token=';
-      // Update these after app release.
-      const IOS_APP_ID = '';
-      const ANDROID_APP_PACKAGE = '';
-      const IOS_STORE_URL = IOS_APP_ID
-        ? `https://apps.apple.com/app/id${encodeURIComponent(IOS_APP_ID)}`
-        : 'https://apps.apple.com';
-      const ANDROID_STORE_URL = ANDROID_APP_PACKAGE
-        ? `https://play.google.com/store/apps/details?id=${encodeURIComponent(ANDROID_APP_PACKAGE)}`
-        : 'https://play.google.com/store';
 
       const params = new URLSearchParams(window.location.search);
       const token = (params.get('token') || '').trim();
-      const summaryEl = document.getElementById('summary');
-      const statusEl = document.getElementById('status');
-      const errorEl = document.getElementById('error');
+
+      const titleEl   = document.getElementById('title');
+      const msgEl     = document.getElementById('message');
+      const footerEl  = document.getElementById('footer');
+      const statusEl  = document.getElementById('status');
+      const errorEl   = document.getElementById('error');
+      const actionsEl = document.getElementById('actions');
       const acceptBtn = document.getElementById('accept');
       const rejectBtn = document.getElementById('reject');
-      const openAppBtn = document.getElementById('openApp');
+      const emailFormEl = document.getElementById('emailForm');
+      const emailInput  = document.getElementById('emailInput');
+      const emailSubmit = document.getElementById('emailSubmit');
+      const installEl  = document.getElementById('install');
+      const installHintEl = document.getElementById('installHint');
+      const btnAndroid = document.getElementById('btnAndroid');
+      const btnIos     = document.getElementById('btnIos');
+      const btnHave    = document.getElementById('btnHave');
+
       let responded = false;
       let submitInFlight = false;
+      let invite = null;
 
-      if (!token) {
-        errorEl.textContent = '無效邀請：缺少 token';
-        acceptBtn.disabled = true;
-        rejectBtn.disabled = true;
+      function interpolate(template, vars) {
+        return String(template || '').replace(/\{\{(\w+)\}\}/g, function (_, k) {
+          return vars[k] != null ? vars[k] : '';
+        });
+      }
+
+      function setButtonsEnabled(enabled) {
+        acceptBtn.disabled = !enabled;
+        rejectBtn.disabled = !enabled;
+      }
+
+      function show(el, on) {
+        if (on) el.classList.add('show');
+        else el.classList.remove('show');
+      }
+
+      function formatRpcError(err) {
+        const message = String(err && err.message ? err.message : err || '');
+        try {
+          const parsed = JSON.parse(message);
+          if (parsed && typeof parsed.message === 'string') return parsed.message;
+        } catch (_) {}
+        return message;
       }
 
       async function rpc(fn, body) {
@@ -78,100 +286,159 @@
         return res.json();
       }
 
-      function setButtonsEnabled(enabled) {
-        acceptBtn.disabled = !enabled;
-        rejectBtn.disabled = !enabled;
+      function buildStoreUrls() {
+        const ios = (invite && invite.ios_store_url) || 'https://apps.apple.com/';
+        const android = (invite && invite.android_store_url) || 'https://play.google.com/store';
+        return { ios, android };
       }
 
-      function formatRpcError(err) {
-        const message = String(err && err.message ? err.message : err || '');
-        try {
-          const parsed = JSON.parse(message);
-          if (parsed && typeof parsed.message === 'string') {
-            return parsed.message;
-          }
-        } catch (_) {
-          // Keep original message if it is not JSON.
-        }
-        return message;
-      }
-
-      function openAppOrStore() {
+      function openAppOrStore(forceApp) {
+        const { ios, android } = buildStoreUrls();
         const deepLink = `${APP_DEEPLINK_SCHEME}${encodeURIComponent(token)}`;
-        const fallback = /iphone|ipad|ipod/i.test(navigator.userAgent) ? IOS_STORE_URL : ANDROID_STORE_URL;
-        // Android browsers inside LINE can be stricter; try intent URL first.
-        if (/android/i.test(navigator.userAgent)) {
-          window.location.href = `intent://invite?token=${encodeURIComponent(token)}#Intent;scheme=frislotnew;package=host.exp.exponent;S.browser_fallback_url=${encodeURIComponent(fallback)};end`;
-          setTimeout(() => {
+        const fallback = /iphone|ipad|ipod/i.test(navigator.userAgent) ? ios : android;
+        if (forceApp) {
+          if (/android/i.test(navigator.userAgent)) {
+            window.location.href = `intent://invite?token=${encodeURIComponent(token)}#Intent;scheme=frislotnew;package=host.exp.exponent;S.browser_fallback_url=${encodeURIComponent(fallback)};end`;
+            setTimeout(() => { window.location.href = deepLink; }, 400);
+          } else {
             window.location.href = deepLink;
-          }, 400);
-        } else {
-          window.location.href = deepLink;
+          }
+          setTimeout(() => { window.location.href = fallback; }, 1500);
         }
-        setTimeout(() => {
-          window.location.href = fallback;
-        }, 1200);
+      }
+
+      function renderInvitation(row) {
+        invite = row;
+        const vars = {
+          inviter_name: row.inviter_name || '好友',
+          inviter_email: row.inviter_email || '',
+          circle_name: row.circle_name || '',
+        };
+        titleEl.textContent  = interpolate(row.card_title  || '{{inviter_name}} 邀請你加入 {{circle_name}}', vars);
+        msgEl.textContent    = interpolate(row.card_message || '', vars);
+        footerEl.textContent = row.card_footer || '';
+        installHintEl.textContent = row.install_hint || '接受邀請後，請依下列方式繼續：';
+        statusEl.textContent = `目前狀態：${row.status}`;
+
+        if (row.status !== 'pending') {
+          responded = true;
+          setButtonsEnabled(false);
+          if (row.status === 'accepted') {
+            show(installEl, true);
+          }
+        }
       }
 
       async function loadInvite() {
+        if (!token) {
+          errorEl.textContent = '無效邀請：缺少 token';
+          setButtonsEnabled(false);
+          return;
+        }
         try {
           const data = await rpc('get_invitation_by_token', { p_token: token });
           const row = Array.isArray(data) ? data[0] : null;
-          if (!row) {
-            throw new Error('邀請不存在或已失效');
-          }
-          const inviter = row.inviter_name || row.inviter_email || '好友';
-          summaryEl.textContent = `${inviter} 邀請你加入「${row.circle_name}」`;
-          statusEl.textContent = `目前狀態：${row.status}`;
-          if (row.status !== 'pending') {
-            responded = true;
-            setButtonsEnabled(false);
-          }
+          if (!row) throw new Error('邀請不存在或已失效');
+          renderInvitation(row);
         } catch (err) {
           errorEl.textContent = formatRpcError(err);
           setButtonsEnabled(false);
         }
       }
 
-      async function respond(action) {
-        if (responded || submitInFlight) {
+      async function markAccepted() {
+        const data = await rpc('respond_invitation', { p_token: token, p_action: 'accept' });
+        const row = Array.isArray(data) ? data[0] : null;
+        if (!row) throw new Error('更新邀請狀態失敗');
+        return row;
+      }
+
+      async function markRejected() {
+        const data = await rpc('respond_invitation', { p_token: token, p_action: 'reject' });
+        const row = Array.isArray(data) ? data[0] : null;
+        if (!row) throw new Error('更新邀請狀態失敗');
+        return row;
+      }
+
+      async function onAcceptClicked() {
+        if (responded || submitInFlight || !invite) return;
+        errorEl.textContent = '';
+
+        // 社群分享連結（無 email）需要先補 email 才能正式接受
+        if (invite.is_share_link) {
+          show(emailFormEl, true);
+          show(actionsEl, false);
+          emailInput.focus();
           return;
         }
+
+        try {
+          submitInFlight = true;
+          setButtonsEnabled(false);
+          const row = await markAccepted();
+          responded = true;
+          statusEl.textContent = `目前狀態：${row.status}`;
+          show(installEl, true);
+        } catch (err) {
+          errorEl.textContent = formatRpcError(err);
+          if (!responded) setButtonsEnabled(true);
+        } finally {
+          submitInFlight = false;
+        }
+      }
+
+      async function onRejectClicked() {
+        if (responded || submitInFlight) return;
         try {
           submitInFlight = true;
           setButtonsEnabled(false);
           errorEl.textContent = '';
-          const data = await rpc('respond_invitation', { p_token: token, p_action: action });
-          const row = Array.isArray(data) ? data[0] : null;
-          if (!row) {
-            throw new Error('更新邀請狀態失敗');
-          }
+          const row = await markRejected();
           responded = true;
           statusEl.textContent = `目前狀態：${row.status}`;
-
-          if (action === 'accept') {
-            openAppBtn.style.display = 'inline-block';
-            openAppOrStore();
-          }
         } catch (err) {
           errorEl.textContent = formatRpcError(err);
-          submitInFlight = false;
-          if (!responded) {
-            setButtonsEnabled(true);
-          }
-          return;
+          if (!responded) setButtonsEnabled(true);
         } finally {
-          if (responded) {
-            submitInFlight = false;
-            setButtonsEnabled(false);
-          }
+          submitInFlight = false;
         }
       }
 
-      acceptBtn.addEventListener('click', () => respond('accept'));
-      rejectBtn.addEventListener('click', () => respond('reject'));
-      openAppBtn.addEventListener('click', () => openAppOrStore());
+      async function onEmailSubmit() {
+        const email = (emailInput.value || '').trim();
+        if (!email) {
+          errorEl.textContent = '請輸入 email';
+          return;
+        }
+        try {
+          emailSubmit.disabled = true;
+          errorEl.textContent = '';
+          await rpc('submit_share_invitation_email', { p_token: token, p_email: email });
+          const row = await markAccepted();
+          responded = true;
+          statusEl.textContent = `目前狀態：${row.status}`;
+          show(emailFormEl, false);
+          show(installEl, true);
+        } catch (err) {
+          errorEl.textContent = formatRpcError(err);
+          emailSubmit.disabled = false;
+        }
+      }
+
+      acceptBtn.addEventListener('click', onAcceptClicked);
+      rejectBtn.addEventListener('click', onRejectClicked);
+      emailSubmit.addEventListener('click', onEmailSubmit);
+      btnAndroid.addEventListener('click', () => {
+        const { android } = buildStoreUrls();
+        window.location.href = android;
+      });
+      btnIos.addEventListener('click', () => {
+        const { ios } = buildStoreUrls();
+        window.location.href = ios;
+      });
+      btnHave.addEventListener('click', () => openAppOrStore(true));
+
       loadInvite();
     </script>
   </body>
-  </html>
+</html>
