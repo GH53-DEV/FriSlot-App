@@ -272,7 +272,7 @@ export default function App() {
         const redirectHint = redirectMismatch
           ? `\n\nSupabase 實際 redirect_to 為：\n${requestedRedirect}\n與 App 顯示的 OAuth Redirect URL 不一致，請以登入頁開發者區塊為準更新 Redirect URLs。`
           : redirectTo.startsWith('http')
-            ? `\n\n若 Supabase Redirect URLs 已含 oauth/callback.html 仍失敗，請再加一條：\nhttps://gh53-dev.github.io/FriSlot-App/oauth/callback.html**\n並確認 GitHub Pages 已部署最新 oauth/callback.html。`
+            ? `\n\n若 Supabase Redirect URLs 已含 oauth/callback.html 仍失敗，請再加一條：\nhttps://gh53-dev.github.io/FriSlot-App/oauth/callback.html**\n若瀏覽器頁面顯示「未收到登入授權碼」，代表 Supabase 沒有把 code 帶回 callback.html。`
             : `\n\n若 Supabase Redirect URLs 已含上述網址仍失敗，多半是 Expo Go 沒接住瀏覽器回呼；請改跑 npm run start:tunnel，並把新的 exp://...exp.direct... 加進 Redirect URLs。`;
         Alert.alert(
           '登入未完成',

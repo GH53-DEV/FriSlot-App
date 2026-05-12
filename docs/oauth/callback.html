@@ -33,37 +33,50 @@
   <body>
     <main>
       <h1>登入完成</h1>
-      <p>請回到 FriSlot App，若未自動返回可關閉此頁。</p>
+      <p id="status">正在回到 FriSlot App…</p>
     </main>
     <script>
       (function () {
         const params = new URLSearchParams(window.location.search);
         const resumeTarget = params.get('to');
-        if (!resumeTarget) {
-          return;
-        }
-
-        const hasCode = params.has('code') || params.has('access_token');
         const hash = window.location.hash.startsWith('#') ? window.location.hash.slice(1) : '';
         const hashParams = new URLSearchParams(hash);
-        const hasHashToken = hashParams.has('access_token');
-        if (!hasCode && !hasHashToken) {
+        const hasCode = params.has('code') || params.has('access_token') || hashParams.has('access_token');
+
+        if (!hasCode) {
+          document.getElementById('status').textContent =
+            '未收到登入授權碼。請回到 App 再試一次 Google 登入。';
           return;
         }
 
-        try {
-          const target = new URL(resumeTarget);
-          params.forEach(function (value, key) {
+        function appendParams(base, searchParams, hashSearchParams) {
+          const pairs = [];
+          searchParams.forEach(function (value, key) {
             if (key === 'to') {
               return;
             }
-            target.searchParams.set(key, value);
+            pairs.push(encodeURIComponent(key) + '=' + encodeURIComponent(value));
           });
-          hashParams.forEach(function (value, key) {
-            target.searchParams.set(key, value);
+          hashSearchParams.forEach(function (value, key) {
+            pairs.push(encodeURIComponent(key) + '=' + encodeURIComponent(value));
           });
-          window.location.replace(target.toString());
-        } catch (_) {}
+          if (!pairs.length) {
+            return base;
+          }
+          return base + (base.indexOf('?') >= 0 ? '&' : '?') + pairs.join('&');
+        }
+
+        function resumeInApp() {
+          if (!resumeTarget) {
+            document.getElementById('status').textContent =
+              '授權碼已收到。請回到 FriSlot App，若未自動返回可關閉此頁。';
+            return;
+          }
+
+          window.location.replace(appendParams(resumeTarget, params, hashParams));
+        }
+
+        window.setTimeout(resumeInApp, 2500);
       })();
     </script>
   </body>
