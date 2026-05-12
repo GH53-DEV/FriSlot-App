@@ -35,5 +35,36 @@
       <h1>登入完成</h1>
       <p>請回到 FriSlot App，若未自動返回可關閉此頁。</p>
     </main>
+    <script>
+      (function () {
+        const params = new URLSearchParams(window.location.search);
+        const resumeTarget = params.get('to');
+        if (!resumeTarget) {
+          return;
+        }
+
+        const hasCode = params.has('code') || params.has('access_token');
+        const hash = window.location.hash.startsWith('#') ? window.location.hash.slice(1) : '';
+        const hashParams = new URLSearchParams(hash);
+        const hasHashToken = hashParams.has('access_token');
+        if (!hasCode && !hasHashToken) {
+          return;
+        }
+
+        try {
+          const target = new URL(resumeTarget);
+          params.forEach(function (value, key) {
+            if (key === 'to') {
+              return;
+            }
+            target.searchParams.set(key, value);
+          });
+          hashParams.forEach(function (value, key) {
+            target.searchParams.set(key, value);
+          });
+          window.location.replace(target.toString());
+        } catch (_) {}
+      })();
+    </script>
   </body>
 </html>

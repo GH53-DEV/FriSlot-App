@@ -1,5 +1,4 @@
 import { StatusBar } from 'expo-status-bar';
-import { makeRedirectUri } from 'expo-auth-session';
 import Constants from 'expo-constants';
 import * as Linking from 'expo-linking';
 import * as WebBrowser from 'expo-web-browser';
@@ -27,7 +26,15 @@ import {
   userExists,
   userHasOwnerCircle,
 } from './src/lib/profileBootstrap';
+import { getGoogleOAuthRedirectUri, getOAuthAuthSessionReturnUrl, isMisconfiguredOAuthRedirect } from './src/lib/authRedirect';
+import {
+  completeOAuthSessionFromUrl,
+  getRedirectToFromOAuthUrl,
+  isOAuthCallbackUrl,
+  waitForOAuthCallbackUrl,
+} from './src/lib/oauthCallback';
 import { parseInvitationTokenFromUrl } from './src/lib/invitation-links';
+import { CircleDetailScreen } from './src/screens/CircleDetailScreen';
 import { CirclesOnboardingScreen } from './src/screens/CirclesOnboardingScreen';
 import { HomeScreen } from './src/screens/HomeScreen';
 import { LoginScreen } from './src/screens/LoginScreen';
@@ -45,6 +52,7 @@ export default function App() {
   const [routeLoading, setRouteLoading] = useState(false);
   const [onboardingBusy, setOnboardingBusy] = useState(false);
   const [acceptedInviteToken, setAcceptedInviteToken] = useState<string | null>(null);
+  const [activeCircleId, setActiveCircleId] = useState<string | null>(null);
   const claimingInviteTokenRef = useRef<string | null>(null);
   const inviteBaseUrl = (Constants.expoConfig?.extra?.inviteBaseUrl as string | undefined)
     ?? 'https://frislot.app/invite';
@@ -161,7 +169,7 @@ export default function App() {
     const claimNow = async () => {
       try {
         setRouteLoading(true);
-        await claimInvitationForExistingProfile({
+        const claim = await claimInvitationForExistingProfile({
           uid: user.id,
           email: user.email ?? '',
           token: acceptedInviteToken,
@@ -170,6 +178,9 @@ export default function App() {
           return;
         }
         setAcceptedInviteToken(null);
+        if (claim.circleRef) {
+          setActiveCircleId(claim.circleRef);
+        }
         await refreshPostAuthRoute(session);
       } catch (err) {
         if (!cancelled) {
@@ -190,13 +201,17 @@ export default function App() {
   }, [acceptedInviteToken, hasUserProfile, refreshPostAuthRoute, session]);
 
   const signInWithGoogle = async () => {
+    let capturedCallbackUrl: string | null = null;
+    const linkingSub = Linking.addEventListener('url', (event) => {
+      if (isOAuthCallbackUrl(event.url)) {
+        capturedCallbackUrl = event.url;
+      }
+    });
+
     try {
       setLoading(true);
       setAuthRouteError(null);
-      const redirectTo = makeRedirectUri({
-        scheme: 'frislotnew',
-        path: 'auth/callback',
-      });
+      const redirectTo = getGoogleOAuthRedirectUri();
 
       const { data, error } = await supabase.auth.signInWithOAuth({
         provider: 'google',
@@ -214,50 +229,62 @@ export default function App() {
         throw new Error('Google OAuth URL was not generated.');
       }
 
-      const result = await WebBrowser.openAuthSessionAsync(data.url, redirectTo);
+      const requestedRedirect = getRedirectToFromOAuthUrl(data.url);
+      const authSessionReturnUrl = getOAuthAuthSessionReturnUrl(redirectTo);
+      const callbackWait = waitForOAuthCallbackUrl();
+      const result = await WebBrowser.openAuthSessionAsync(data.url, authSessionReturnUrl);
+      const callbackUrls = Array.from(
+        new Set(
+          [
+            result.type === 'success' ? result.url : null,
+            capturedCallbackUrl,
+            await callbackWait,
+          ].filter((url): url is string => typeof url === 'string' && url.length > 0),
+        ),
+      );
 
-      if (result.type === 'success' && result.url) {
-        const { queryParams } = Linking.parse(result.url);
-        const code = queryParams?.code;
-        const errorDescription =
-          (typeof queryParams?.error_description === 'string' && queryParams.error_description) ||
-          (typeof queryParams?.error === 'string' && queryParams.error);
-
-        if (typeof code === 'string') {
-          const exchangeResult = await supabase.auth.exchangeCodeForSession(code);
-          if (exchangeResult.error) {
-            throw exchangeResult.error;
-          }
+      for (const callbackUrl of callbackUrls) {
+        if (isMisconfiguredOAuthRedirect(callbackUrl)) {
+          Alert.alert(
+            'Google 登入設定未完成',
+            `瀏覽器被導向 example.com，代表 Supabase 的 Site URL 仍是預設值，或 Redirect URLs 未包含此 App 回呼網址。\n\n請到 Supabase → Authentication → URL Configuration：\n1. 將 Site URL 改為正式網址（勿用 example.com）\n2. 在 Redirect URLs 加入：\n${redirectTo}\n\nGoogle Cloud 的 OAuth 重新導向 URI 仍須為：\n${supabaseUrl}/auth/v1/callback`,
+          );
           return;
         }
 
-        const hash = result.url.split('#')[1] ?? '';
-        const hashParams = new URLSearchParams(hash);
-        const accessToken = hashParams.get('access_token');
-        const refreshToken = hashParams.get('refresh_token');
-
-        if (accessToken && refreshToken) {
-          const setSessionResult = await supabase.auth.setSession({
-            access_token: accessToken,
-            refresh_token: refreshToken,
-          });
-          if (setSessionResult.error) {
-            throw setSessionResult.error;
-          }
+        if (await completeOAuthSessionFromUrl(callbackUrl)) {
           return;
         }
+      }
 
-        if (errorDescription) {
-          throw new Error(errorDescription);
-        }
+      const { data: sessionData } = await supabase.auth.getSession();
+      if (sessionData.session) {
+        return;
       }
 
       if (result.type !== 'cancel') {
-        Alert.alert('Login incomplete', 'Google sign-in did not return an auth code.');
+        const returnedUrl = result.type === 'success' ? result.url : undefined;
+        const landedOnInviteSite = returnedUrl?.includes('gh53-dev.github.io');
+        const redirectMismatch =
+          typeof requestedRedirect === 'string' &&
+          requestedRedirect.length > 0 &&
+          requestedRedirect !== redirectTo;
+        const redirectHint = redirectMismatch
+          ? `\n\nSupabase 實際 redirect_to 為：\n${requestedRedirect}\n與 App 顯示的 OAuth Redirect URL 不一致，請以登入頁開發者區塊為準更新 Redirect URLs。`
+          : redirectTo.startsWith('http')
+            ? `\n\n若 Supabase Redirect URLs 已含 oauth/callback.html 仍失敗，請再加一條：\nhttps://gh53-dev.github.io/FriSlot-App/oauth/callback.html**\n並確認 GitHub Pages 已部署最新 oauth/callback.html。`
+            : `\n\n若 Supabase Redirect URLs 已含上述網址仍失敗，多半是 Expo Go 沒接住瀏覽器回呼；請改跑 npm run start:tunnel，並把新的 exp://...exp.direct... 加進 Redirect URLs。`;
+        Alert.alert(
+          '登入未完成',
+          landedOnInviteSite
+            ? `Google 登入後瀏覽器被導向 GitHub Pages，App 沒收到 auth code。\n\n請確認 Supabase Redirect URLs 含登入頁開發者區塊的 OAuth Redirect URL：\n${redirectTo}${redirectHint}`
+            : `Google 登入後 App 沒收到 auth code。\n\n請確認 Supabase Redirect URLs 含：\n${redirectTo}${redirectHint}`,
+        );
       }
     } catch (err) {
-      Alert.alert('Google login failed', formatErrorMessage(err));
+      Alert.alert('Google 登入失敗', formatErrorMessage(err));
     } finally {
+      linkingSub.remove();
       setLoading(false);
     }
   };
@@ -299,6 +326,7 @@ export default function App() {
     setHasOwnerCircle(null);
     setHasUserProfile(null);
     setAuthRouteError(null);
+    setActiveCircleId(null);
   };
 
   const testSupabaseConnection = async () => {
@@ -325,8 +353,11 @@ export default function App() {
   };
 
   const handleOnboardingSubmit = async (payload: {
+    email: string;
+    realName: string;
     displayName: string;
-    phoneNumber: string;
+    mobile: string;
+    phone: string;
     circleName: string;
     inviteEmails: string[];
     inviteMethod: 'none' | 'line' | 'email';
@@ -339,16 +370,19 @@ export default function App() {
       setOnboardingBusy(true);
       const result = await createFirstCircleAndInvites({
         uid: user.id,
-        email: user.email ?? null,
+        email: payload.email || user.email || null,
         circleName: payload.circleName,
+        realName: payload.realName,
         displayName: payload.displayName,
         photoUrl:
           (typeof user.user_metadata?.avatar_url === 'string' && user.user_metadata.avatar_url) ||
           null,
-        phoneNumber: payload.phoneNumber,
+        mobile: payload.mobile,
+        phone: payload.phone,
         inviteEmails: payload.inviteEmails,
         inviteBaseUrl,
         acceptedInviteToken,
+        inviteMethod: payload.inviteMethod,
       });
       let emailDispatchWarning: string | null = null;
       if (result.invitationLinks.length > 0) {
@@ -366,14 +400,6 @@ export default function App() {
           } else if (payload.inviteMethod === 'line') {
             await openLineForInvitations(result.invitationLinks);
           } else {
-            const templates = await getInvitationEmailTemplates();
-            await dispatchInvitationEmails({
-              ownerEmail: user.email ?? '',
-              circleName: payload.circleName,
-              subjectTemplate: templates.subjectTemplate,
-              bodyTemplate: templates.bodyTemplate,
-              invitations: result.invitationPayloads,
-            });
             await promptShareOptions(result.invitationLinks);
           }
         } catch (err) {
@@ -391,6 +417,9 @@ export default function App() {
       setHasOwnerCircle(result.joinedViaInvitation ? false : true);
       setHasUserProfile(true);
       setAcceptedInviteToken(null);
+      if (result.circleId) {
+        setActiveCircleId(result.circleId);
+      }
     } catch (err) {
       Alert.alert('建立失敗', formatErrorMessage(err));
     } finally {
@@ -468,12 +497,28 @@ export default function App() {
       <CirclesOnboardingScreen
         busy={onboardingBusy}
         joiningViaInvitation={Boolean(acceptedInviteToken)}
+        initialEmail={session?.user.email ?? null}
         onSubmit={handleOnboardingSubmit}
         onCancel={handleOnboardingCancel}
       />
     );
+  } else if (activeCircleId && session) {
+    body = (
+      <CircleDetailScreen
+        circleId={activeCircleId}
+        userId={session.user.id}
+        onBack={() => setActiveCircleId(null)}
+      />
+    );
   } else {
-    body = <HomeScreen userLabel={userLabel} onSignOut={signOut} />;
+    body = (
+      <HomeScreen
+        userLabel={userLabel}
+        userId={session.user.id}
+        onOpenCircle={setActiveCircleId}
+        onSignOut={signOut}
+      />
+    );
   }
 
   return (
