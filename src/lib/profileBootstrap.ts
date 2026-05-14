@@ -26,9 +26,10 @@ export async function upsertUserFromAuth(user: User) {
     const { error } = await supabase.from(T.users).insert({
       uid: user.id,
       email: user.email ?? null,
+      real_name: null,
       display_name: displayName,
       photo_url: photoUrl,
-      phone_number: user.phone ?? null,
+      mobile: user.phone ?? null,
       created_time: new Date().toISOString(),
     });
     if (error) {
@@ -108,12 +109,20 @@ export type CreateFirstCircleInput = {
   uid: string;
   email?: string | null;
   circleName: string;
+  realName?: string | null;
   displayName: string;
   photoUrl?: string | null;
-  phoneNumber: string;
+  mobile: string;
   inviteEmails: string[];
   inviteBaseUrl: string;
   acceptedInviteToken?: string | null;
+  /**
+   * 邀請模式：
+   * - 'email' = 用個別 email 建立可寄送的邀請（既有流程）
+   * - 'line'  = 建立一張通用分享邀請函連結，後續由 owner 透過 LINE 等社群分享
+   * - 'none'  = 不建立邀請
+   */
+  inviteMethod?: 'none' | 'email' | 'line';
 };
 
 export type InvitationLinkPayload = {
@@ -126,9 +135,10 @@ export async function createFirstCircleAndInvites(input: CreateFirstCircleInput)
     {
       uid: input.uid,
       email: input.email ?? null,
+      real_name: input.realName?.trim() || null,
       display_name: input.displayName.trim() || null,
       photo_url: input.photoUrl ?? null,
-      phone_number: input.phoneNumber.trim() || null,
+      mobile: input.mobile.trim() || null,
       created_time: new Date().toISOString(),
     },
     { onConflict: 'uid' }
@@ -208,8 +218,31 @@ export async function createFirstCircleAndInvites(input: CreateFirstCircleInput)
     throw mErr;
   }
 
+  const inviteMethod = input.inviteMethod ?? 'email';
   const emails = input.inviteEmails.map((e) => e.trim().toLowerCase()).filter(Boolean);
-  if (emails.length === 0) {
+
+  // LINE / 社群分享：建立一張不帶 email 的通用邀請函連結
+  if (inviteMethod === 'line') {
+    const { data: shareData, error: shareErr } = await supabase.rpc('create_share_invitation', {
+      p_circle_id: circleId,
+      p_base_url: input.inviteBaseUrl,
+    });
+    if (shareErr) {
+      throw shareErr;
+    }
+    const shareRow = Array.isArray(shareData) && shareData.length > 0 ? shareData[0] : null;
+    const shareUrl = typeof shareRow?.invite_url === 'string' ? shareRow.invite_url : '';
+    return {
+      circleId,
+      invitationLinks: shareUrl ? [shareUrl] : [],
+      invitationPayloads: shareUrl
+        ? [{ invitedEmail: '', inviteUrl: shareUrl } as InvitationLinkPayload]
+        : [],
+      joinedViaInvitation: false,
+    };
+  }
+
+  if (inviteMethod !== 'email' || emails.length === 0) {
     return {
       circleId,
       invitationLinks: [] as string[],
@@ -243,5 +276,56 @@ export async function createFirstCircleAndInvites(input: CreateFirstCircleInput)
     invitationLinks: invitationPayloads.map((row) => row.inviteUrl),
     invitationPayloads,
     joinedViaInvitation: false,
+  };
+}
+
+export async function createShareInvitationForCircle(
+  circleId: string,
+  inviteBaseUrl: string
+): Promise<{ invitationLinks: string[]; invitationPayloads: InvitationLinkPayload[] }> {
+  const { data: shareData, error: shareErr } = await supabase.rpc('create_share_invitation', {
+    p_circle_id: circleId,
+    p_base_url: inviteBaseUrl,
+  });
+  if (shareErr) {
+    throw shareErr;
+  }
+  const shareRow = Array.isArray(shareData) && shareData.length > 0 ? shareData[0] : null;
+  const shareUrl = typeof shareRow?.invite_url === 'string' ? shareRow.invite_url : '';
+  return {
+    invitationLinks: shareUrl ? [shareUrl] : [],
+    invitationPayloads: shareUrl ? [{ invitedEmail: '', inviteUrl: shareUrl }] : [],
+  };
+}
+
+export async function createEmailInvitationsForCircle(
+  circleId: string,
+  inviteEmails: string[],
+  inviteBaseUrl: string
+): Promise<{ invitationLinks: string[]; invitationPayloads: InvitationLinkPayload[] }> {
+  const emails = inviteEmails.map((e) => e.trim().toLowerCase()).filter(Boolean);
+  if (emails.length === 0) {
+    return { invitationLinks: [], invitationPayloads: [] };
+  }
+  const { data: linksData, error: linksErr } = await supabase.rpc('create_invitation_links', {
+    p_circle_id: circleId,
+    p_emails: emails,
+    p_base_url: inviteBaseUrl,
+  });
+  if (linksErr) {
+    throw linksErr;
+  }
+  const invitationPayloads: InvitationLinkPayload[] =
+    Array.isArray(linksData) && linksData.length > 0
+      ? linksData
+          .map((row) => ({
+            invitedEmail: typeof row.invited_email === 'string' ? row.invited_email : '',
+            inviteUrl: typeof row.invite_url === 'string' ? row.invite_url : '',
+          }))
+          .filter((row) => row.invitedEmail && row.inviteUrl)
+      : [];
+  return {
+    invitationLinks: invitationPayloads.map((row) => row.inviteUrl),
+    invitationPayloads,
   };
 }

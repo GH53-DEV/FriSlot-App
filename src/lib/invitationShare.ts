@@ -30,3 +30,23 @@ export async function openLineForInvitations(links: string[]) {
   }
   await Linking.openURL(lineUrl);
 }
+
+export async function openWhatsAppForInvitations(links: string[]) {
+  const message = encodeURIComponent(buildMessage(links));
+  const url = `whatsapp://send?text=${message}`;
+  const canOpen = await Linking.canOpenURL(url);
+  if (!canOpen) {
+    throw new Error('目前裝置無法開啟 WhatsApp');
+  }
+  await Linking.openURL(url);
+}
+
+export async function openTelegramShareForInvitations(links: string[]) {
+  const text = encodeURIComponent(buildMessage(links));
+  const url = `https://t.me/share/url?text=${text}`;
+  const canOpen = await Linking.canOpenURL(url);
+  if (!canOpen) {
+    throw new Error('目前裝置無法開啟 Telegram 分享');
+  }
+  await Linking.openURL(url);
+}

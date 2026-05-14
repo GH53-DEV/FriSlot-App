@@ -18,11 +18,15 @@ import { dispatchInvitationEmails, getInvitationEmailTemplates } from './src/lib
 import {
   openEmailForInvitations,
   openLineForInvitations,
+  openTelegramShareForInvitations,
+  openWhatsAppForInvitations,
   shareInvitationLinksGeneric,
 } from './src/lib/invitationShare';
 import {
   claimInvitationForExistingProfile,
+  createEmailInvitationsForCircle,
   createFirstCircleAndInvites,
+  createShareInvitationForCircle,
   userExists,
   userHasOwnerCircle,
 } from './src/lib/profileBootstrap';
@@ -35,7 +39,12 @@ import {
 } from './src/lib/oauthCallback';
 import { parseInvitationTokenFromUrl } from './src/lib/invitation-links';
 import { CircleDetailScreen } from './src/screens/CircleDetailScreen';
-import { CirclesOnboardingScreen } from './src/screens/CirclesOnboardingScreen';
+import {
+  CirclesOnboardingScreen,
+  PostCircleInviteStep,
+  type PostCircleInviteChannel,
+  type ProfileCircleFormPayload,
+} from './src/screens/CirclesOnboardingScreen';
 import { HomeScreen } from './src/screens/HomeScreen';
 import { LoginScreen } from './src/screens/LoginScreen';
 
@@ -43,6 +52,8 @@ WebBrowser.maybeCompleteAuthSession();
 
 export default function App() {
   const [session, setSession] = useState<Session | null>(null);
+  /** Avoid showing Login before AsyncStorage session is read (prevents OAuth race with stale session). */
+  const [authHydrated, setAuthHydrated] = useState(false);
   const [loading, setLoading] = useState(false);
   const [testing, setTesting] = useState(false);
   const [connectionMessage, setConnectionMessage] = useState('尚未測試連線');
@@ -52,8 +63,14 @@ export default function App() {
   const [routeLoading, setRouteLoading] = useState(false);
   const [onboardingBusy, setOnboardingBusy] = useState(false);
   const [acceptedInviteToken, setAcceptedInviteToken] = useState<string | null>(null);
+  /** 新帳號：已建立圈子，依流程圖進入「選擇社群／Email 邀請」步驟 */
+  const [inviteAfterCircle, setInviteAfterCircle] = useState<{
+    circleId: string;
+    circleName: string;
+  } | null>(null);
   const [activeCircleId, setActiveCircleId] = useState<string | null>(null);
   const claimingInviteTokenRef = useRef<string | null>(null);
+  const postInviteShareUrlRef = useRef<string | null>(null);
   const inviteBaseUrl = (Constants.expoConfig?.extra?.inviteBaseUrl as string | undefined)
     ?? 'https://frislot.app/invite';
 
@@ -122,9 +139,24 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    supabase.auth.getSession().then(({ data }) => {
-      setSession(data.session);
-    });
+    let cancelled = false;
+
+    const hydrate = async () => {
+      try {
+        const { data } = await supabase.auth.getSession();
+        if (cancelled) {
+          return;
+        }
+        setSession(data.session);
+        await refreshPostAuthRoute(data.session);
+      } finally {
+        if (!cancelled) {
+          setAuthHydrated(true);
+        }
+      }
+    };
+
+    void hydrate();
 
     const {
       data: { subscription },
@@ -134,9 +166,26 @@ export default function App() {
     });
 
     return () => {
+      cancelled = true;
       subscription.unsubscribe();
     };
   }, [refreshPostAuthRoute]);
+
+  useEffect(() => {
+    postInviteShareUrlRef.current = null;
+  }, [inviteAfterCircle?.circleId]);
+
+  const goToCircleDetailAfterInviteStep = useCallback(
+    async (circleId: string) => {
+      setActiveCircleId(circleId);
+      setInviteAfterCircle(null);
+      postInviteShareUrlRef.current = null;
+      if (session) {
+        await refreshPostAuthRoute(session);
+      }
+    },
+    [refreshPostAuthRoute, session],
+  );
 
   useEffect(() => {
     const consumeUrl = (url: string | null) => {
@@ -218,6 +267,9 @@ export default function App() {
         options: {
           redirectTo,
           skipBrowserRedirect: true,
+          queryParams: {
+            prompt: 'select_account',
+          },
         },
       });
 
@@ -327,6 +379,7 @@ export default function App() {
     setHasUserProfile(null);
     setAuthRouteError(null);
     setActiveCircleId(null);
+    setInviteAfterCircle(null);
   };
 
   const testSupabaseConnection = async () => {
@@ -352,12 +405,11 @@ export default function App() {
     }
   };
 
-  const handleOnboardingSubmit = async (payload: {
+  const handleJoiningOnboardingSubmit = async (payload: {
     email: string;
     realName: string;
     displayName: string;
     mobile: string;
-    phone: string;
     circleName: string;
     inviteEmails: string[];
     inviteMethod: 'none' | 'line' | 'email';
@@ -378,7 +430,6 @@ export default function App() {
           (typeof user.user_metadata?.avatar_url === 'string' && user.user_metadata.avatar_url) ||
           null,
         mobile: payload.mobile,
-        phone: payload.phone,
         inviteEmails: payload.inviteEmails,
         inviteBaseUrl,
         acceptedInviteToken,
@@ -427,6 +478,130 @@ export default function App() {
     }
   };
 
+  const handleNewUserProfileAndCircle = async (payload: ProfileCircleFormPayload) => {
+    const user = session?.user;
+    if (!user) {
+      return;
+    }
+    try {
+      setOnboardingBusy(true);
+      const result = await createFirstCircleAndInvites({
+        uid: user.id,
+        email: payload.email || user.email || null,
+        circleName: payload.circleName,
+        realName: payload.realName,
+        displayName: payload.displayName,
+        photoUrl:
+          (typeof user.user_metadata?.avatar_url === 'string' && user.user_metadata.avatar_url) ||
+          null,
+        mobile: payload.mobile,
+        inviteEmails: [],
+        inviteBaseUrl,
+        acceptedInviteToken: null,
+        inviteMethod: 'none',
+      });
+      if (!result.circleId) {
+        Alert.alert('建立失敗', '未取得密友圈編號');
+        return;
+      }
+      setHasOwnerCircle(result.joinedViaInvitation ? false : true);
+      setHasUserProfile(true);
+      setAcceptedInviteToken(null);
+      setInviteAfterCircle({ circleId: result.circleId, circleName: payload.circleName.trim() });
+    } catch (err) {
+      Alert.alert('建立失敗', formatErrorMessage(err));
+    } finally {
+      setOnboardingBusy(false);
+    }
+  };
+
+  const handlePostShareSocial = async (channel: PostCircleInviteChannel) => {
+    if (!inviteAfterCircle) {
+      return;
+    }
+    const circleId = inviteAfterCircle.circleId;
+    try {
+      setOnboardingBusy(true);
+      if (!postInviteShareUrlRef.current) {
+        const { invitationLinks } = await createShareInvitationForCircle(circleId, inviteBaseUrl);
+        postInviteShareUrlRef.current = invitationLinks[0] ?? null;
+      }
+      const url = postInviteShareUrlRef.current;
+      if (!url) {
+        Alert.alert('邀請', '未能產生分享連結，請稍後再試。');
+        return;
+      }
+      const links = [url];
+      switch (channel) {
+        case 'line':
+          await openLineForInvitations(links);
+          break;
+        case 'whatsapp':
+          await openWhatsAppForInvitations(links);
+          break;
+        case 'telegram':
+          await openTelegramShareForInvitations(links);
+          break;
+        case 'mail':
+          await openEmailForInvitations(links);
+          break;
+        case 'system':
+          await shareInvitationLinksGeneric(links);
+          break;
+        default:
+          break;
+      }
+      await goToCircleDetailAfterInviteStep(circleId);
+      Alert.alert('邀請', '已在伺服器建立邀請函並開啟分享。');
+    } catch (err) {
+      Alert.alert('邀請失敗', formatErrorMessage(err));
+    } finally {
+      setOnboardingBusy(false);
+    }
+  };
+
+  const handlePostEmailInvites = async (emails: string[]) => {
+    if (!inviteAfterCircle || !session?.user) {
+      return;
+    }
+    try {
+      setOnboardingBusy(true);
+      const { invitationPayloads } = await createEmailInvitationsForCircle(
+        inviteAfterCircle.circleId,
+        emails,
+        inviteBaseUrl
+      );
+      if (invitationPayloads.length === 0) {
+        Alert.alert('邀請', '未能建立邀請資料，請確認 email 是否正確。');
+        return;
+      }
+      const templates = await getInvitationEmailTemplates();
+      await dispatchInvitationEmails({
+        ownerEmail: session.user.email ?? '',
+        circleName: inviteAfterCircle.circleName,
+        subjectTemplate: templates.subjectTemplate,
+        bodyTemplate: templates.bodyTemplate,
+        invitations: invitationPayloads,
+      });
+      await goToCircleDetailAfterInviteStep(inviteAfterCircle.circleId);
+      Alert.alert(
+        '邀請已建立',
+        '資料庫已寫入 pending 邀請並已嘗試寄信。若未收到，請在 Supabase 部署 send-invitation-emails、設定 RESEND_API_KEY 與 INVITATION_FROM_EMAIL，並確認 Resend 網域已驗證。',
+      );
+    } catch (err) {
+      Alert.alert('邀請失敗', formatErrorMessage(err));
+    } finally {
+      setOnboardingBusy(false);
+    }
+  };
+
+  const handlePostSkipInvites = async () => {
+    if (!inviteAfterCircle) {
+      return;
+    }
+    await goToCircleDetailAfterInviteStep(inviteAfterCircle.circleId);
+  };
+
   const handleOnboardingCancel = async () => {
     const user = session?.user;
     if (!user) {
@@ -450,7 +625,14 @@ export default function App() {
   const userLabel = session?.user.email ?? session?.user.id ?? '';
 
   let body: ReactNode;
-  if (!session) {
+  if (!authHydrated) {
+    body = (
+      <View style={styles.centered}>
+        <ActivityIndicator size="large" />
+        <Text style={styles.loadingText}>載入中…</Text>
+      </View>
+    );
+  } else if (!session) {
     body = (
       <LoginScreen
         busy={loading}
@@ -492,13 +674,25 @@ export default function App() {
         </View>
       </View>
     );
+  } else if (session && inviteAfterCircle) {
+    body = (
+      <PostCircleInviteStep
+        busy={onboardingBusy}
+        circleId={inviteAfterCircle.circleId}
+        circleName={inviteAfterCircle.circleName}
+        onShareSocial={(ch) => handlePostShareSocial(ch)}
+        onSubmitEmails={(emails) => handlePostEmailInvites(emails)}
+        onSkip={handlePostSkipInvites}
+      />
+    );
   } else if (!hasOwnerCircle && !hasUserProfile) {
     body = (
       <CirclesOnboardingScreen
         busy={onboardingBusy}
         joiningViaInvitation={Boolean(acceptedInviteToken)}
         initialEmail={session?.user.email ?? null}
-        onSubmit={handleOnboardingSubmit}
+        onJoiningSubmit={handleJoiningOnboardingSubmit}
+        onProfileAndCircleOnly={handleNewUserProfileAndCircle}
         onCancel={handleOnboardingCancel}
       />
     );

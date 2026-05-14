@@ -38,7 +38,18 @@ export async function dispatchInvitationEmails(input: DispatchInput) {
   });
 
   if (error) {
-    throw error;
+    throw new Error(
+      `${error.message}\n\n若為開發環境，請確認已部署 Edge Function「send-invitation-emails」，並設定密鑰 RESEND_API_KEY 與 INVITATION_FROM_EMAIL（Resend 發信網域需已驗證）。`
+    );
+  }
+
+  if (data && typeof data === 'object' && 'error' in data && (data as { error?: unknown }).error) {
+    throw new Error(String((data as { error: unknown }).error));
+  }
+
+  const sent = (data as { sent?: Array<{ ok?: boolean; error?: string }> } | null)?.sent;
+  if (Array.isArray(sent) && sent.length > 0 && sent.every((row) => !row.ok)) {
+    throw new Error(sent.map((r) => r.error).filter(Boolean).join('; ') || '全部邀請信寄送失敗');
   }
 
   return data;

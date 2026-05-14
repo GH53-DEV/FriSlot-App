@@ -1,4 +1,5 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+import { getGoogleOAuthRedirectUri } from '../lib/authRedirect';
 import {
   Alert,
   Button,
@@ -33,6 +34,14 @@ export function LoginScreen({
 }: LoginScreenProps) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [oauthRedirectUri, setOauthRedirectUri] = useState('');
+
+  useEffect(() => {
+    if (!__DEV__) {
+      return;
+    }
+    setOauthRedirectUri(getGoogleOAuthRedirectUri());
+  }, []);
 
   const handleEmailLogin = async () => {
     const trimmed = email.trim();
@@ -113,6 +122,13 @@ export function LoginScreen({
           <View style={styles.devBox}>
             <Text style={styles.devLabel}>開發者</Text>
             <Text style={styles.devStatus}>{devConnectionMessage ?? ''}</Text>
+            <Text style={styles.devRedirect} selectable>
+              OAuth Redirect URL（請加入 Supabase Redirect URLs）：{'\n'}
+              {oauthRedirectUri || 'frislotnew://auth/callback'}
+            </Text>
+            <Text style={styles.devHint}>
+              若 Expo Go 顯示 Something went wrong，請確認手機與電腦同一 Wi‑Fi，並用 Metro 終端機上的 LAN QR 重新掃描（避免不穩定的 tunnel）。
+            </Text>
             <Button
               title={devTesting ? '測試中…' : '測試 Supabase 連線'}
               onPress={onDevTestConnection}
@@ -223,5 +239,17 @@ const styles = StyleSheet.create({
     color: '#334155',
     marginBottom: 8,
     textAlign: 'center',
+  },
+  devRedirect: {
+    fontSize: 11,
+    color: '#475569',
+    marginBottom: 8,
+    lineHeight: 16,
+  },
+  devHint: {
+    fontSize: 11,
+    color: '#64748b',
+    marginBottom: 8,
+    lineHeight: 16,
   },
 });

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   Alert,
   Button,
@@ -6,94 +6,129 @@ import {
   StyleSheet,
   Text,
   TextInput,
+  TouchableOpacity,
   View,
 } from 'react-native';
+
+export type ProfileCircleFormPayload = {
+  email: string;
+  realName: string;
+  displayName: string;
+  mobile: string;
+  circleName: string;
+};
+
+export type JoiningOnboardingPayload = ProfileCircleFormPayload & {
+  inviteEmails: string[];
+  inviteMethod: 'none' | 'line' | 'email';
+};
 
 export type CirclesOnboardingScreenProps = {
   busy: boolean;
   joiningViaInvitation?: boolean;
-  onSubmit: (payload: {
-    displayName: string;
-    phoneNumber: string;
-    circleName: string;
-    inviteEmails: string[];
-    inviteMethod: 'none' | 'line' | 'email';
-  }) => Promise<void>;
+  initialEmail?: string | null;
+  /** 經由邀請連結加入：單步完成資料（沿用既有 create + claim） */
+  onJoiningSubmit: (payload: JoiningOnboardingPayload) => Promise<void>;
+  /** 新帳號：僅建立個人資料 + 第一個密友圈，不建立邀請 */
+  onProfileAndCircleOnly: (payload: ProfileCircleFormPayload) => Promise<void>;
   onCancel: () => Promise<void>;
 };
 
 export function CirclesOnboardingScreen({
   busy,
   joiningViaInvitation,
-  onSubmit,
+  initialEmail,
+  onJoiningSubmit,
+  onProfileAndCircleOnly,
   onCancel,
 }: CirclesOnboardingScreenProps) {
+  const [email, setEmail] = useState(initialEmail ?? '');
+  const [realName, setRealName] = useState('');
   const [displayName, setDisplayName] = useState('');
-  const [phoneNumber, setPhoneNumber] = useState('');
+  const [mobile, setMobile] = useState('');
   const [circleName, setCircleName] = useState('');
-  const [invite1, setInvite1] = useState('');
-  const [invite2, setInvite2] = useState('');
-  const [invite3, setInvite3] = useState('');
-  const [inviteMode, setInviteMode] = useState<'none' | 'line' | 'email'>('none');
 
-  const clearForm = () => {
-    setDisplayName('');
-    setPhoneNumber('');
-    setCircleName('');
-    setInvite1('');
-    setInvite2('');
-    setInvite3('');
-  };
+  useEffect(() => {
+    if (initialEmail && !email) {
+      setEmail(initialEmail);
+    }
+  }, [initialEmail, email]);
 
   const handleCreate = async () => {
+    if (!email.trim()) {
+      Alert.alert('建立密友圈', '請輸入 email');
+      return;
+    }
     if (!joiningViaInvitation && !circleName.trim()) {
       Alert.alert('建立密友圈', '請輸入圈名');
       return;
     }
-    const normalizedEmails = [invite1, invite2, invite3].map((v) => v.trim()).filter(Boolean);
-    if (!joiningViaInvitation && inviteMode !== 'none' && normalizedEmails.length === 0) {
-      Alert.alert('邀請密友', '已選擇邀請方式，請至少輸入 1 組 email。');
+    const base: ProfileCircleFormPayload = {
+      email: email.trim(),
+      realName: realName.trim(),
+      displayName: displayName.trim(),
+      mobile: mobile.trim(),
+      circleName: circleName.trim(),
+    };
+    if (joiningViaInvitation) {
+      await onJoiningSubmit({
+        ...base,
+        inviteEmails: [],
+        inviteMethod: 'none',
+      });
       return;
     }
-    await onSubmit({
-      displayName,
-      phoneNumber,
-      circleName,
-      inviteEmails: [invite1, invite2, invite3],
-      inviteMethod: inviteMode,
-    });
+    await onProfileAndCircleOnly(base);
   };
 
   return (
     <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
       <View style={styles.panel}>
         <Text style={styles.title}>建立你的第一個密友圈</Text>
-        <Text style={styles.hint}>新帳號需先建立起始圈；邀請好友可稍後再補</Text>
+        <Text style={styles.hint}>
+          {joiningViaInvitation
+            ? '你是被邀請加入圈子，請完成個人資料即可繼續。'
+            : '新帳號需先建立起始圈；完成後再選擇邀請方式（與流程圖一致）。'}
+        </Text>
 
-        <Text style={styles.label}>Your name</Text>
+        <TextInput
+          style={styles.input}
+          value={email}
+          onChangeText={setEmail}
+          placeholder="電子郵件"
+          autoCapitalize="none"
+          keyboardType="email-address"
+          editable={!busy}
+        />
+
+        <TextInput
+          style={styles.input}
+          value={realName}
+          onChangeText={setRealName}
+          placeholder="真實姓名（選填）"
+          editable={!busy}
+        />
+
         <TextInput
           style={styles.input}
           value={displayName}
           onChangeText={setDisplayName}
-          placeholder="顯示名稱"
+          placeholder="顯示名稱或暱稱"
           editable={!busy}
         />
 
-        <Text style={styles.label}>Your mobile phone</Text>
         <TextInput
           style={styles.input}
-          value={phoneNumber}
-          onChangeText={setPhoneNumber}
-          placeholder="手機號碼"
+          value={mobile}
+          onChangeText={setMobile}
+          placeholder="手機號碼（選填）"
           keyboardType="phone-pad"
           editable={!busy}
         />
 
-        {joiningViaInvitation ? (
-          <Text style={styles.hint}>你是被邀請加入圈子，請完成個人資料即可繼續。</Text>
-        ) : (
+        {!joiningViaInvitation ? (
           <>
-            <Text style={styles.section}>建立你的第一個密友圈</Text>
+            <Text style={styles.section}>密友圈名稱</Text>
             <TextInput
               style={styles.input}
               value={circleName}
@@ -101,71 +136,143 @@ export function CirclesOnboardingScreen({
               placeholder="輸入密友圈名稱"
               editable={!busy}
             />
-
-            <Text style={styles.section}>邀請密友（選填）</Text>
-            <Text style={styles.inviteHint}>點選方式後才會顯示對應欄位</Text>
-            <View style={styles.inviteMethodRow}>
-              <View style={styles.methodBtn}>
-                <Button
-                  title="LINE"
-                  onPress={() => setInviteMode('line')}
-                  disabled={busy}
-                  color={inviteMode === 'line' ? '#7c3aed' : '#64748b'}
-                />
-              </View>
-              <View style={styles.methodBtn}>
-                <Button
-                  title="Email"
-                  onPress={() => setInviteMode('email')}
-                  disabled={busy}
-                  color={inviteMode === 'email' ? '#7c3aed' : '#64748b'}
-                />
-              </View>
-            </View>
-            {inviteMode === 'line' ? (
-              <Text style={styles.inviteHint}>建立後會直接開 LINE 分享，仍需填 email 才能建立 invitations 紀錄。</Text>
-            ) : null}
-            {inviteMode !== 'none' ? (
-              <>
-                <TextInput
-                  style={styles.input}
-                  value={invite1}
-                  onChangeText={setInvite1}
-                  placeholder="密友 1 email"
-                  autoCapitalize="none"
-                  keyboardType="email-address"
-                  editable={!busy}
-                />
-                <TextInput
-                  style={styles.input}
-                  value={invite2}
-                  onChangeText={setInvite2}
-                  placeholder="密友 2 email"
-                  autoCapitalize="none"
-                  keyboardType="email-address"
-                  editable={!busy}
-                />
-                <TextInput
-                  style={styles.input}
-                  value={invite3}
-                  onChangeText={setInvite3}
-                  placeholder="密友 3 email"
-                  autoCapitalize="none"
-                  keyboardType="email-address"
-                  editable={!busy}
-                />
-              </>
-            ) : null}
           </>
-        )}
+        ) : null}
 
         <View style={styles.row}>
           <View style={styles.rowBtn}>
-            <Button title={busy ? '建立中…' : '建立'} onPress={handleCreate} disabled={busy} />
+            <Button
+              title={busy ? '建立中…' : joiningViaInvitation ? '建立' : '建立密友圈'}
+              onPress={handleCreate}
+              disabled={busy}
+            />
           </View>
           <View style={styles.rowBtn}>
             <Button title="取消" onPress={() => void onCancel()} disabled={busy} color="#64748b" />
           </View>
+        </View>
+      </View>
+    </ScrollView>
+  );
+}
+
+export type PostCircleInviteChannel = 'line' | 'whatsapp' | 'telegram' | 'mail' | 'system';
+
+export type PostCircleInviteStepProps = {
+  busy: boolean;
+  circleId: string;
+  circleName: string;
+  onShareSocial: (channel: PostCircleInviteChannel) => Promise<void>;
+  onSubmitEmails: (emails: string[]) => Promise<void>;
+  onSkip: () => Promise<void>;
+};
+
+/** 流程圖：建立圈子後 → 選擇社群／Email，此時後端才建立對應 invitations */
+export function PostCircleInviteStep({
+  busy,
+  circleName,
+  onShareSocial,
+  onSubmitEmails,
+  onSkip,
+}: PostCircleInviteStepProps) {
+  const [inviteMode, setInviteMode] = useState<'idle' | 'line' | 'email'>('idle');
+  const [invite1, setInvite1] = useState('');
+  const [invite2, setInvite2] = useState('');
+  const [invite3, setInvite3] = useState('');
+
+  const methodCard = (mode: 'line' | 'email', title: string, subtitle: string) => (
+    <TouchableOpacity
+      style={[styles.methodCard, inviteMode === mode && styles.methodCardSelected]}
+      onPress={() => setInviteMode((prev) => (prev === mode ? 'idle' : mode))}
+      disabled={busy}
+      activeOpacity={0.85}
+    >
+      <Text style={styles.methodTitle}>{title}</Text>
+      <Text style={styles.methodSubtitle}>{subtitle}</Text>
+    </TouchableOpacity>
+  );
+
+  const socialBtn = (
+    channel: PostCircleInviteChannel,
+    label: string,
+    bg: string,
+    textColor = '#ffffff',
+  ) => (
+    <TouchableOpacity
+      key={channel}
+      style={[styles.socialChannelBtn, { backgroundColor: bg }, busy && styles.disabled]}
+      onPress={() => void onShareSocial(channel)}
+      disabled={busy}
+      activeOpacity={0.85}
+    >
+      <Text style={[styles.socialChannelBtnText, { color: textColor }]}>{label}</Text>
+    </TouchableOpacity>
+  );
+
+  const handleEmailSend = async () => {
+    const emails = [invite1, invite2, invite3].map((v) => v.trim()).filter(Boolean);
+    if (emails.length === 0) {
+      Alert.alert('Email 邀請', '請至少輸入一組有效的 email。');
+      return;
+    }
+    await onSubmitEmails(emails);
+  };
+
+  return (
+    <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
+      <View style={styles.panel}>
+        <Text style={styles.title}>邀請密友</Text>
+        <Text style={styles.hint}>
+          密友圈「{circleName}」已建立。請選擇邀請方式：選 LINE／其他社群時，會先在伺服器產生邀請函，再開啟分享讓你選對象。
+        </Text>
+
+        {methodCard('line', 'LINE／其他社群', '通用邀請連結，不需事先填 email；展開後選擇要開啟的 App')}
+        {inviteMode === 'line' ? (
+          <View style={styles.socialList}>
+            {socialBtn('line', 'LINE', '#06c755')}
+            {socialBtn('whatsapp', 'WhatsApp', '#128C7E')}
+            {socialBtn('telegram', 'Telegram', '#229ED9')}
+            {socialBtn('mail', 'Email', '#475569')}
+            {socialBtn('system', '更多／系統分享', '#64748b')}
+          </View>
+        ) : null}
+
+        {methodCard('email', 'Email 邀請', '建立後依你填的 email 產生專屬邀請並嘗試寄信')}
+        {inviteMode === 'email' ? (
+          <>
+            <TextInput
+              style={styles.input}
+              value={invite1}
+              onChangeText={setInvite1}
+              placeholder="密友 1 email"
+              autoCapitalize="none"
+              keyboardType="email-address"
+              editable={!busy}
+            />
+            <TextInput
+              style={styles.input}
+              value={invite2}
+              onChangeText={setInvite2}
+              placeholder="密友 2 email"
+              autoCapitalize="none"
+              keyboardType="email-address"
+              editable={!busy}
+            />
+            <TextInput
+              style={styles.input}
+              value={invite3}
+              onChangeText={setInvite3}
+              placeholder="密友 3 email"
+              autoCapitalize="none"
+              keyboardType="email-address"
+              editable={!busy}
+            />
+            <Button title={busy ? '送出中…' : '送出 Email 邀請'} onPress={() => void handleEmailSend()} disabled={busy} />
+          </>
+        ) : null}
+
+        <View style={styles.skipWrap}>
+          <Button title="稍後再邀請" onPress={() => void onSkip()} disabled={busy} color="#64748b" />
         </View>
       </View>
     </ScrollView>
@@ -203,23 +310,45 @@ const styles = StyleSheet.create({
     marginBottom: 8,
     color: '#334155',
   },
-  inviteHint: {
-    fontSize: 12,
-    color: '#64748b',
+  methodCard: {
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    borderRadius: 10,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
     marginBottom: 10,
+    backgroundColor: '#f8fafc',
   },
-  inviteMethodRow: {
-    flexDirection: 'row',
-    gap: 12,
-    marginBottom: 12,
+  methodCardSelected: {
+    borderColor: '#7c3aed',
+    backgroundColor: '#f5f3ff',
   },
-  methodBtn: {
-    flex: 1,
+  methodTitle: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#1e293b',
+    marginBottom: 4,
   },
-  label: {
+  methodSubtitle: {
     fontSize: 12,
     color: '#64748b',
-    marginBottom: 4,
+    lineHeight: 17,
+  },
+  socialList: {
+    gap: 10,
+    marginBottom: 16,
+  },
+  socialChannelBtn: {
+    paddingVertical: 12,
+    borderRadius: 10,
+    alignItems: 'center',
+  },
+  socialChannelBtnText: {
+    fontWeight: '700',
+    fontSize: 15,
+  },
+  disabled: {
+    opacity: 0.6,
   },
   input: {
     borderWidth: 1,
@@ -237,5 +366,8 @@ const styles = StyleSheet.create({
   },
   rowBtn: {
     flex: 1,
+  },
+  skipWrap: {
+    marginTop: 20,
   },
 });

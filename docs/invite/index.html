@@ -245,9 +245,10 @@
       let invite = null;
 
       function interpolate(template, vars) {
-        return String(template || '').replace(/\{\{(\w+)\}\}/g, function (_, k) {
+        var s = String(template || '').replace(/\{\{(\w+)\}\}/g, function (_, k) {
           return vars[k] != null ? vars[k] : '';
         });
+        return s.replace(/\\n/g, '\n');
       }
 
       function setButtonsEnabled(enabled) {
@@ -292,19 +293,9 @@
         return { ios, android };
       }
 
-      function openAppOrStore(forceApp) {
-        const { ios, android } = buildStoreUrls();
+      function openAppDeepLinkOnly() {
         const deepLink = `${APP_DEEPLINK_SCHEME}${encodeURIComponent(token)}`;
-        const fallback = /iphone|ipad|ipod/i.test(navigator.userAgent) ? ios : android;
-        if (forceApp) {
-          if (/android/i.test(navigator.userAgent)) {
-            window.location.href = `intent://invite?token=${encodeURIComponent(token)}#Intent;scheme=frislotnew;package=host.exp.exponent;S.browser_fallback_url=${encodeURIComponent(fallback)};end`;
-            setTimeout(() => { window.location.href = deepLink; }, 400);
-          } else {
-            window.location.href = deepLink;
-          }
-          setTimeout(() => { window.location.href = fallback; }, 1500);
-        }
+        window.location.href = deepLink;
       }
 
       function renderInvitation(row) {
@@ -436,7 +427,7 @@
         const { ios } = buildStoreUrls();
         window.location.href = ios;
       });
-      btnHave.addEventListener('click', () => openAppOrStore(true));
+      btnHave.addEventListener('click', () => openAppDeepLinkOnly());
 
       loadInvite();
     </script>

@@ -3,7 +3,10 @@
   "version": "1.0.0",
   "main": "index.ts",
   "scripts": {
-    "start": "expo start",
+    "start": "expo start --lan",
+    "start:lan": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/start-lan.ps1",
+    "fix:lan": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/fix-lan-network.ps1",
+    "start:tunnel": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/start-tunnel.ps1",
     "android": "expo start --android",
     "ios": "expo start --ios",
     "web": "expo start --web"

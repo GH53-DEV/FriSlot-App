@@ -245,9 +245,11 @@
       let invite = null;
 
       function interpolate(template, vars) {
-        return String(template || '').replace(/\{\{(\w+)\}\}/g, function (_, k) {
+        var s = String(template || '').replace(/\{\{(\w+)\}\}/g, function (_, k) {
           return vars[k] != null ? vars[k] : '';
         });
+        // 相容舊版 DB：PostgreSQL 一般字串中的 \n 會變成字面反斜線 + n
+        return s.replace(/\\n/g, '\n');
       }
 
       function setButtonsEnabled(enabled) {
@@ -292,18 +294,13 @@
         return { ios, android };
       }
 
-      function openAppOrStore(forceApp) {
-        const { ios, android } = buildStoreUrls();
+      /** 僅開啟 App deep link；勿在逾時後強制導向商店（否則「已擁有 FriSlot」會誤進 Play／App Store）。 */
+      function openAppDeepLinkOnly() {
         const deepLink = `${APP_DEEPLINK_SCHEME}${encodeURIComponent(token)}`;
-        const fallback = /iphone|ipad|ipod/i.test(navigator.userAgent) ? ios : android;
-        if (forceApp) {
-          if (/android/i.test(navigator.userAgent)) {
-            window.location.href = `intent://invite?token=${encodeURIComponent(token)}#Intent;scheme=frislotnew;package=host.exp.exponent;S.browser_fallback_url=${encodeURIComponent(fallback)};end`;
-            setTimeout(() => { window.location.href = deepLink; }, 400);
-          } else {
-            window.location.href = deepLink;
-          }
-          setTimeout(() => { window.location.href = fallback; }, 1500);
+        if (/android/i.test(navigator.userAgent)) {
+          window.location.href = deepLink;
+        } else {
+          window.location.href = deepLink;
         }
       }
 
@@ -436,7 +433,7 @@
         const { ios } = buildStoreUrls();
         window.location.href = ios;
       });
-      btnHave.addEventListener('click', () => openAppOrStore(true));
+      btnHave.addEventListener('click', () => openAppDeepLinkOnly());
 
       loadInvite();
     </script>
