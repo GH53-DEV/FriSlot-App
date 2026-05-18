@@ -129,7 +129,7 @@ export function CirclesOnboardingScreen({
           style={styles.input}
           value={realName}
           onChangeText={setRealName}
-          placeholder="真實姓名（選填）"
+          placeholder="真實姓名_以免暱稱重複"
           editable={!busy}
         />
 
@@ -137,7 +137,7 @@ export function CirclesOnboardingScreen({
           style={styles.input}
           value={displayName}
           onChangeText={setDisplayName}
-          placeholder="顯示名稱或暱稱"
+          placeholder="暱稱_喜歡大家怎麼稱呼你"
           editable={!busy}
         />
 
@@ -145,22 +145,19 @@ export function CirclesOnboardingScreen({
           style={styles.input}
           value={mobile}
           onChangeText={setMobile}
-          placeholder="手機號碼（選填）"
+          placeholder="手機號碼"
           keyboardType="phone-pad"
           editable={!busy}
         />
 
         {!joiningViaInvitation ? (
-          <>
-            <Text style={styles.section}>密友圈名稱</Text>
-            <TextInput
-              style={styles.input}
-              value={circleName}
-              onChangeText={setCircleName}
-              placeholder="輸入密友圈名稱"
-              editable={!busy}
-            />
-          </>
+          <TextInput
+            style={styles.input}
+            value={circleName}
+            onChangeText={setCircleName}
+            placeholder="建立你的第一個密友圈"
+            editable={!busy}
+          />
         ) : null}
 
         <View style={styles.row}>

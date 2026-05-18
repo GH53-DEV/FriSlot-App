@@ -30,7 +30,6 @@ export async function upsertUserFromAuth(user: User) {
       display_name: displayName,
       photo_url: photoUrl,
       mobile: user.phone ?? null,
-      created_time: new Date().toISOString(),
     });
     if (error) {
       throw error;
@@ -189,7 +188,6 @@ export async function createFirstCircleAndInvites(input: CreateFirstCircleInput)
       display_name: input.displayName.trim() || null,
       photo_url: input.photoUrl ?? null,
       mobile: input.mobile.trim() || null,
-      created_time: new Date().toISOString(),
     },
     { onConflict: 'uid' }
   );
@@ -245,7 +243,6 @@ export async function createFirstCircleAndInvites(input: CreateFirstCircleInput)
     .insert({
       circle_name: input.circleName.trim(),
       owner_id: input.uid,
-      created_at: new Date().toISOString(),
     })
     .select('id')
     .single();
@@ -261,7 +258,6 @@ export async function createFirstCircleAndInvites(input: CreateFirstCircleInput)
     user_id: input.uid,
     role: 'owner',
     status: 'active',
-    joined_at: new Date().toISOString(),
   });
 
   if (mErr) {
