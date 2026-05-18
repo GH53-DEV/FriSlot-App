@@ -27,6 +27,7 @@ import {
   createEmailInvitationsForCircle,
   createFirstCircleAndInvites,
   createShareInvitationForCircle,
+  fetchInvitationByToken,
   userExists,
   userHasOwnerCircle,
 } from './src/lib/profileBootstrap';
@@ -37,7 +38,10 @@ import {
   isOAuthCallbackUrl,
   waitForOAuthCallbackUrl,
 } from './src/lib/oauthCallback';
-import { parseInvitationTokenFromUrl } from './src/lib/invitation-links';
+import {
+  parseInvitationCircleIdFromUrl,
+  parseInvitationTokenFromUrl,
+} from './src/lib/invitation-links';
 import { CircleDetailScreen } from './src/screens/CircleDetailScreen';
 import {
   CirclesOnboardingScreen,
@@ -63,6 +67,13 @@ export default function App() {
   const [routeLoading, setRouteLoading] = useState(false);
   const [onboardingBusy, setOnboardingBusy] = useState(false);
   const [acceptedInviteToken, setAcceptedInviteToken] = useState<string | null>(null);
+  const [pendingInviteCircleId, setPendingInviteCircleId] = useState<string | null>(null);
+  const [inviteeProfilePrefill, setInviteeProfilePrefill] = useState<{
+    email: string;
+    realName: string;
+    displayName: string;
+    mobile: string;
+  } | null>(null);
   /** 新帳號：已建立圈子，依流程圖進入「選擇社群／Email 邀請」步驟 */
   const [inviteAfterCircle, setInviteAfterCircle] = useState<{
     circleId: string;
@@ -193,6 +204,10 @@ export default function App() {
       if (token) {
         setAcceptedInviteToken(token);
       }
+      const circleId = parseInvitationCircleIdFromUrl(url);
+      if (circleId) {
+        setPendingInviteCircleId(circleId);
+      }
     };
 
     Linking.getInitialURL().then((url) => consumeUrl(url));
@@ -202,6 +217,38 @@ export default function App() {
       sub.remove();
     };
   }, []);
+
+  useEffect(() => {
+    if (!acceptedInviteToken) {
+      return;
+    }
+    let cancelled = false;
+    const loadInvitePrefill = async () => {
+      try {
+        const row = await fetchInvitationByToken(acceptedInviteToken);
+        if (cancelled || !row) {
+          return;
+        }
+        if (row.circle_ref) {
+          setPendingInviteCircleId(row.circle_ref);
+        }
+        setInviteeProfilePrefill({
+          email: row.invited_email,
+          realName: row.invitee_real_name,
+          displayName: row.invitee_display_name,
+          mobile: row.invitee_mobile,
+        });
+      } catch (err) {
+        if (__DEV__) {
+          console.warn('[invite-prefill]', err);
+        }
+      }
+    };
+    void loadInvitePrefill();
+    return () => {
+      cancelled = true;
+    };
+  }, [acceptedInviteToken]);
 
   useEffect(() => {
     const user = session?.user;
@@ -227,8 +274,11 @@ export default function App() {
           return;
         }
         setAcceptedInviteToken(null);
-        if (claim.circleRef) {
-          setActiveCircleId(claim.circleRef);
+        setInviteeProfilePrefill(null);
+        const targetCircleId = claim.circleRef ?? pendingInviteCircleId;
+        if (targetCircleId) {
+          setActiveCircleId(targetCircleId);
+          setPendingInviteCircleId(null);
         }
         await refreshPostAuthRoute(session);
       } catch (err) {
@@ -247,7 +297,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [acceptedInviteToken, hasUserProfile, refreshPostAuthRoute, session]);
+  }, [acceptedInviteToken, hasUserProfile, pendingInviteCircleId, refreshPostAuthRoute, session]);
 
   const signInWithGoogle = async () => {
     let capturedCallbackUrl: string | null = null;
@@ -690,7 +740,10 @@ export default function App() {
       <CirclesOnboardingScreen
         busy={onboardingBusy}
         joiningViaInvitation={Boolean(acceptedInviteToken)}
-        initialEmail={session?.user.email ?? null}
+        initialEmail={inviteeProfilePrefill?.email || session?.user.email || null}
+        initialRealName={inviteeProfilePrefill?.realName}
+        initialDisplayName={inviteeProfilePrefill?.displayName}
+        initialMobile={inviteeProfilePrefill?.mobile}
         onJoiningSubmit={handleJoiningOnboardingSubmit}
         onProfileAndCircleOnly={handleNewUserProfileAndCircle}
         onCancel={handleOnboardingCancel}

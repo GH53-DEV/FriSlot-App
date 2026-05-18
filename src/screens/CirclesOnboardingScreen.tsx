@@ -27,6 +27,9 @@ export type CirclesOnboardingScreenProps = {
   busy: boolean;
   joiningViaInvitation?: boolean;
   initialEmail?: string | null;
+  initialRealName?: string;
+  initialDisplayName?: string;
+  initialMobile?: string;
   /** 經由邀請連結加入：單步完成資料（沿用既有 create + claim） */
   onJoiningSubmit: (payload: JoiningOnboardingPayload) => Promise<void>;
   /** 新帳號：僅建立個人資料 + 第一個密友圈，不建立邀請 */
@@ -38,21 +41,42 @@ export function CirclesOnboardingScreen({
   busy,
   joiningViaInvitation,
   initialEmail,
+  initialRealName,
+  initialDisplayName,
+  initialMobile,
   onJoiningSubmit,
   onProfileAndCircleOnly,
   onCancel,
 }: CirclesOnboardingScreenProps) {
   const [email, setEmail] = useState(initialEmail ?? '');
-  const [realName, setRealName] = useState('');
-  const [displayName, setDisplayName] = useState('');
-  const [mobile, setMobile] = useState('');
+  const [realName, setRealName] = useState(initialRealName ?? '');
+  const [displayName, setDisplayName] = useState(initialDisplayName ?? '');
+  const [mobile, setMobile] = useState(initialMobile ?? '');
   const [circleName, setCircleName] = useState('');
 
   useEffect(() => {
-    if (initialEmail && !email) {
+    if (initialEmail) {
       setEmail(initialEmail);
     }
-  }, [initialEmail, email]);
+  }, [initialEmail]);
+
+  useEffect(() => {
+    if (initialRealName) {
+      setRealName(initialRealName);
+    }
+  }, [initialRealName]);
+
+  useEffect(() => {
+    if (initialDisplayName) {
+      setDisplayName(initialDisplayName);
+    }
+  }, [initialDisplayName]);
+
+  useEffect(() => {
+    if (initialMobile) {
+      setMobile(initialMobile);
+    }
+  }, [initialMobile]);
 
   const handleCreate = async () => {
     if (!email.trim()) {

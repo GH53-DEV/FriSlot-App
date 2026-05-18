@@ -28,7 +28,6 @@
       }
       .wrap { max-width: 480px; margin: 0 auto; }
 
-      /* 紙本風邀請函外框 */
       .invitation-card {
         position: relative;
         background: var(--paper-bg);
@@ -100,6 +99,7 @@
         display: flex;
         gap: 12px;
       }
+      .actions.hidden { display: none; }
       .actions button {
         flex: 1;
         font-size: 15px;
@@ -113,7 +113,6 @@
       .reject { background: var(--reject); color: #fff; }
       .accept:disabled, .reject:disabled { opacity: 0.55; cursor: not-allowed; }
 
-      /* 社群分享流程：接受後補 email */
       .email-form {
         margin-top: 18px;
         display: none;
@@ -124,7 +123,9 @@
         font-size: 13px;
         color: var(--muted);
         margin-bottom: 6px;
+        margin-top: 10px;
       }
+      .email-form label:first-child { margin-top: 0; }
       .email-form input {
         width: 100%;
         font-size: 16px;
@@ -132,6 +133,10 @@
         border: 1px solid #cbd5e1;
         border-radius: 8px;
         background: #fff;
+      }
+      .email-form input:read-only {
+        background: #f1f5f9;
+        color: #64748b;
       }
       .email-form .submit {
         margin-top: 12px;
@@ -147,7 +152,6 @@
       .email-form .submit:disabled { opacity: 0.55; cursor: not-allowed; }
       .email-form .hint { font-size: 12px; color: var(--muted); margin-top: 6px; }
 
-      /* 接受後的 3 個安裝引導按鈕 */
       .install {
         margin-top: 18px;
         display: none;
@@ -197,10 +201,16 @@
         </div>
 
         <div class="email-form" id="emailForm">
-          <label for="emailInput">請填寫你的 email 完成接受</label>
+          <label for="emailInput">Email</label>
           <input id="emailInput" type="email" placeholder="email" autocomplete="email" />
+          <label for="realNameInput">真實姓名</label>
+          <input id="realNameInput" type="text" placeholder="真實姓名" autocomplete="name" />
+          <label for="displayNameInput">顯示名稱或暱稱</label>
+          <input id="displayNameInput" type="text" placeholder="顯示名稱或暱稱" />
+          <label for="mobileInput">手機號碼</label>
+          <input id="mobileInput" type="tel" placeholder="手機號碼" autocomplete="tel" />
           <button id="emailSubmit" class="submit">回傳並接受邀請</button>
-          <p class="hint">填入的 email 會與此邀請綁定，方便日後登入認領圈子。</p>
+          <p class="hint">資料會寫入邀請與使用者紀錄，安裝 App 後將直接進入此密友圈。</p>
         </div>
 
         <div class="install" id="install">
@@ -215,10 +225,9 @@
     </div>
 
     <script>
-      // 部署前請依環境替換。
       const SUPABASE_URL = 'https://obebzwhqpfyvtnxtfzqc.supabase.co';
       const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im9iZWJ6d2hxcGZ5dnRueHRmenFjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzc0NTU4NzMsImV4cCI6MjA5MzAzMTg3M30.oc6xgK_qCPHRExU3s9zTmL93YPAq5YHgKOa57nOMK5g';
-      const APP_DEEPLINK_SCHEME = 'frislotnew://invite?token=';
+      const APP_DEEPLINK_BASE = 'frislotnew://invite';
 
       const params = new URLSearchParams(window.location.search);
       const token = (params.get('token') || '').trim();
@@ -233,6 +242,9 @@
       const rejectBtn = document.getElementById('reject');
       const emailFormEl = document.getElementById('emailForm');
       const emailInput  = document.getElementById('emailInput');
+      const realNameInput = document.getElementById('realNameInput');
+      const displayNameInput = document.getElementById('displayNameInput');
+      const mobileInput = document.getElementById('mobileInput');
       const emailSubmit = document.getElementById('emailSubmit');
       const installEl  = document.getElementById('install');
       const installHintEl = document.getElementById('installHint');
@@ -259,6 +271,11 @@
       function show(el, on) {
         if (on) el.classList.add('show');
         else el.classList.remove('show');
+      }
+
+      function hideActions(on) {
+        if (on) actionsEl.classList.add('hidden');
+        else actionsEl.classList.remove('hidden');
       }
 
       function formatRpcError(err) {
@@ -293,9 +310,34 @@
         return { ios, android };
       }
 
+      function buildAppDeepLink() {
+        const q = new URLSearchParams();
+        q.set('token', token);
+        if (invite && invite.circle_ref) {
+          q.set('circle_id', invite.circle_ref);
+        }
+        return `${APP_DEEPLINK_BASE}?${q.toString()}`;
+      }
+
       function openAppDeepLinkOnly() {
-        const deepLink = `${APP_DEEPLINK_SCHEME}${encodeURIComponent(token)}`;
+        const deepLink = buildAppDeepLink();
         window.location.href = deepLink;
+      }
+
+      function showInviteeForm() {
+        const presetEmail = (invite && invite.invited_email) ? invite.invited_email.trim() : '';
+        emailInput.value = presetEmail;
+        emailInput.readOnly = Boolean(presetEmail);
+        realNameInput.value = (invite && invite.invitee_real_name) || '';
+        displayNameInput.value = (invite && invite.invitee_display_name) || '';
+        mobileInput.value = (invite && invite.invitee_mobile) || '';
+        show(emailFormEl, true);
+        hideActions(true);
+        if (!presetEmail) {
+          emailInput.focus();
+        } else {
+          realNameInput.focus();
+        }
       }
 
       function renderInvitation(row) {
@@ -313,17 +355,19 @@
 
         if (row.status !== 'pending') {
           responded = true;
-          setButtonsEnabled(false);
+          hideActions(true);
           if (row.status === 'accepted') {
             show(installEl, true);
           }
+        } else {
+          hideActions(false);
         }
       }
 
       async function loadInvite() {
         if (!token) {
           errorEl.textContent = '無效邀請：缺少 token';
-          setButtonsEnabled(false);
+          hideActions(true);
           return;
         }
         try {
@@ -333,7 +377,7 @@
           renderInvitation(row);
         } catch (err) {
           errorEl.textContent = formatRpcError(err);
-          setButtonsEnabled(false);
+          hideActions(true);
         }
       }
 
@@ -351,31 +395,20 @@
         return row;
       }
 
+      async function submitInviteeDetails(email, realName, displayName, mobile) {
+        await rpc('submit_invitation_invitee_details', {
+          p_token: token,
+          p_email: email,
+          p_real_name: realName || null,
+          p_display_name: displayName || null,
+          p_mobile: mobile || null,
+        });
+      }
+
       async function onAcceptClicked() {
         if (responded || submitInFlight || !invite) return;
         errorEl.textContent = '';
-
-        // 社群分享連結（無 email）需要先補 email 才能正式接受
-        if (invite.is_share_link) {
-          show(emailFormEl, true);
-          show(actionsEl, false);
-          emailInput.focus();
-          return;
-        }
-
-        try {
-          submitInFlight = true;
-          setButtonsEnabled(false);
-          const row = await markAccepted();
-          responded = true;
-          statusEl.textContent = `目前狀態：${row.status}`;
-          show(installEl, true);
-        } catch (err) {
-          errorEl.textContent = formatRpcError(err);
-          if (!responded) setButtonsEnabled(true);
-        } finally {
-          submitInFlight = false;
-        }
+        showInviteeForm();
       }
 
       async function onRejectClicked() {
@@ -387,6 +420,7 @@
           const row = await markRejected();
           responded = true;
           statusEl.textContent = `目前狀態：${row.status}`;
+          hideActions(true);
         } catch (err) {
           errorEl.textContent = formatRpcError(err);
           if (!responded) setButtonsEnabled(true);
@@ -397,6 +431,9 @@
 
       async function onEmailSubmit() {
         const email = (emailInput.value || '').trim();
+        const realName = (realNameInput.value || '').trim();
+        const displayName = (displayNameInput.value || '').trim();
+        const mobile = (mobileInput.value || '').trim();
         if (!email) {
           errorEl.textContent = '請輸入 email';
           return;
@@ -404,11 +441,20 @@
         try {
           emailSubmit.disabled = true;
           errorEl.textContent = '';
-          await rpc('submit_share_invitation_email', { p_token: token, p_email: email });
+          await submitInviteeDetails(email, realName, displayName, mobile);
           const row = await markAccepted();
           responded = true;
+          invite = Object.assign({}, invite || {}, {
+            invited_email: email,
+            invitee_real_name: realName,
+            invitee_display_name: displayName,
+            invitee_mobile: mobile,
+            status: row.status,
+            circle_ref: row.circle_ref || (invite && invite.circle_ref),
+          });
           statusEl.textContent = `目前狀態：${row.status}`;
           show(emailFormEl, false);
+          hideActions(true);
           show(installEl, true);
         } catch (err) {
           errorEl.textContent = formatRpcError(err);

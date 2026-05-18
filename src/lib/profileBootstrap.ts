@@ -82,6 +82,40 @@ export async function userExists(uid: string): Promise<boolean> {
   return data != null;
 }
 
+export type InvitationByTokenRow = {
+  invitation_id: string;
+  circle_ref: string;
+  circle_name: string;
+  invited_email: string;
+  status: string;
+  invitee_real_name: string;
+  invitee_display_name: string;
+  invitee_mobile: string;
+};
+
+export async function fetchInvitationByToken(token: string): Promise<InvitationByTokenRow | null> {
+  const { data, error } = await supabase.rpc('get_invitation_by_token', {
+    p_token: token,
+  });
+  if (error) {
+    throw error;
+  }
+  const row = Array.isArray(data) && data.length > 0 ? data[0] : null;
+  if (!row) {
+    return null;
+  }
+  return {
+    invitation_id: String(row.invitation_id ?? ''),
+    circle_ref: String(row.circle_ref ?? ''),
+    circle_name: String(row.circle_name ?? ''),
+    invited_email: String(row.invited_email ?? ''),
+    status: String(row.status ?? ''),
+    invitee_real_name: String(row.invitee_real_name ?? ''),
+    invitee_display_name: String(row.invitee_display_name ?? ''),
+    invitee_mobile: String(row.invitee_mobile ?? ''),
+  };
+}
+
 export async function claimInvitationForExistingProfile(input: {
   uid: string;
   email: string;
