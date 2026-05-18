@@ -20,6 +20,7 @@ export type LoginScreenProps = {
   devConnectionMessage?: string;
   devTesting?: boolean;
   onDevTestConnection?: () => void;
+  invitePendingMessage?: string | null;
 };
 
 export function LoginScreen({
@@ -31,6 +32,7 @@ export function LoginScreen({
   devConnectionMessage,
   devTesting,
   onDevTestConnection,
+  invitePendingMessage,
 }: LoginScreenProps) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -65,6 +67,9 @@ export function LoginScreen({
     <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
       <View style={styles.panel}>
         <Text style={styles.logoPlaceholder}>[ Logo ]</Text>
+        {invitePendingMessage ? (
+          <Text style={styles.inviteBanner}>{invitePendingMessage}</Text>
+        ) : null}
         {authError ? <Text style={styles.errorBanner}>{authError}</Text> : null}
 
         <TouchableOpacity
@@ -167,6 +172,15 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     marginBottom: 12,
     fontSize: 13,
+  },
+  inviteBanner: {
+    backgroundColor: '#ecfdf5',
+    color: '#047857',
+    padding: 10,
+    borderRadius: 8,
+    marginBottom: 12,
+    fontSize: 13,
+    textAlign: 'center',
   },
   socialBtn: {
     backgroundColor: '#0f172a',

@@ -266,6 +266,7 @@
       }
 
       function hideActions(on) {
+        actionsEl.style.display = on ? 'none' : '';
         if (on) actionsEl.classList.add('hidden');
         else actionsEl.classList.remove('hidden');
       }
@@ -312,9 +313,28 @@
       }
 
       function openAppDeepLinkOnly() {
+        if (!token) {
+          errorEl.textContent = '無效邀請：缺少 token';
+          return;
+        }
         const deepLink = buildAppDeepLink();
+        errorEl.textContent = '';
+        installHintEl.textContent = '正在開啟 FriSlot App…';
+
+        const openedAt = Date.now();
         const isAndroid = /android/i.test(navigator.userAgent);
-        if (isAndroid) {
+        const isIOS = /iphone|ipad|ipod/i.test(navigator.userAgent);
+
+        if (isIOS) {
+          const iframe = document.createElement('iframe');
+          iframe.style.display = 'none';
+          iframe.src = deepLink;
+          document.body.appendChild(iframe);
+          setTimeout(function () {
+            document.body.removeChild(iframe);
+            window.location.href = deepLink;
+          }, 80);
+        } else if (isAndroid) {
           const intentUrl =
             'intent://invite?' +
             new URLSearchParams({
@@ -325,10 +345,21 @@
           window.location.href = intentUrl;
           setTimeout(function () {
             window.location.href = deepLink;
-          }, 800);
-          return;
+          }, 500);
+        } else {
+          window.location.href = deepLink;
         }
-        window.location.href = deepLink;
+
+        setTimeout(function () {
+          if (document.visibilityState === 'visible' && Date.now() - openedAt < 4000) {
+            installHintEl.textContent =
+              invite && invite.install_hint
+                ? invite.install_hint
+                : '接受邀請後，請依下列方式繼續：';
+            errorEl.textContent =
+              '若未自動開啟 App：請確認已安裝 FriSlot 正式版（非僅瀏覽器），並用與邀請相同的 email 登入。';
+          }
+        }, 2800);
       }
 
       function showInviteeForm() {

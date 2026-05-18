@@ -43,6 +43,11 @@ import {
   parseInvitationCircleIdFromUrl,
   parseInvitationTokenFromUrl,
 } from './src/lib/invitation-links';
+import {
+  clearPendingInviteDeepLink,
+  readPendingInviteDeepLink,
+  savePendingInviteDeepLink,
+} from './src/lib/pendingInviteStorage';
 import { CircleDetailScreen } from './src/screens/CircleDetailScreen';
 import {
   CirclesOnboardingScreen,
@@ -75,6 +80,7 @@ export default function App() {
     displayName: string;
     mobile: string;
   } | null>(null);
+  const [inviteMetaReady, setInviteMetaReady] = useState(false);
   /** 新帳號：已建立圈子，依流程圖進入「選擇社群／Email 邀請」步驟 */
   const [inviteAfterCircle, setInviteAfterCircle] = useState<{
     circleId: string;
@@ -200,31 +206,54 @@ export default function App() {
   );
 
   useEffect(() => {
-    const consumeUrl = (url: string | null) => {
-      const token = parseInvitationTokenFromUrl(url);
-      if (token) {
-        setAcceptedInviteToken(token);
-      }
-      const circleId = parseInvitationCircleIdFromUrl(url);
+    let cancelled = false;
+
+    const applyInviteDeepLink = async (token: string, circleId: string | null) => {
+      setAcceptedInviteToken(token);
       if (circleId) {
         setPendingInviteCircleId(circleId);
       }
+      await savePendingInviteDeepLink(token, circleId);
     };
 
+    const consumeUrl = (url: string | null) => {
+      const token = parseInvitationTokenFromUrl(url);
+      if (!token) {
+        return;
+      }
+      const circleId = parseInvitationCircleIdFromUrl(url);
+      void applyInviteDeepLink(token, circleId);
+    };
+
+    const hydratePendingInvite = async () => {
+      const stored = await readPendingInviteDeepLink();
+      if (cancelled || !stored.token) {
+        return;
+      }
+      setAcceptedInviteToken((current) => current ?? stored.token);
+      if (stored.circleId) {
+        setPendingInviteCircleId((current) => current ?? stored.circleId);
+      }
+    };
+
+    void hydratePendingInvite();
     Linking.getInitialURL().then((url) => consumeUrl(url));
     const sub = Linking.addEventListener('url', (event) => consumeUrl(event.url));
 
     return () => {
+      cancelled = true;
       sub.remove();
     };
   }, []);
 
   useEffect(() => {
     if (!acceptedInviteToken) {
+      setInviteMetaReady(false);
       return;
     }
     let cancelled = false;
     const loadInvitePrefill = async () => {
+      setInviteMetaReady(false);
       try {
         const row = await fetchInvitationByToken(acceptedInviteToken);
         if (cancelled || !row) {
@@ -243,6 +272,10 @@ export default function App() {
         if (__DEV__) {
           console.warn('[invite-prefill]', err);
         }
+      } finally {
+        if (!cancelled) {
+          setInviteMetaReady(true);
+        }
       }
     };
     void loadInvitePrefill();
@@ -253,7 +286,7 @@ export default function App() {
 
   useEffect(() => {
     const user = session?.user;
-    if (!user || !acceptedInviteToken) {
+    if (!user || !acceptedInviteToken || !inviteMetaReady) {
       return;
     }
     if (claimingInviteTokenRef.current === acceptedInviteToken) {
@@ -274,6 +307,7 @@ export default function App() {
           setPendingInviteCircleId(null);
           setAcceptedInviteToken(null);
           setInviteeProfilePrefill(null);
+          await clearPendingInviteDeepLink();
           return true;
         }
       } catch (memberErr) {
@@ -303,6 +337,7 @@ export default function App() {
           setActiveCircleId(targetCircleId);
           setPendingInviteCircleId(null);
           navigated = true;
+          await clearPendingInviteDeepLink();
         }
         await refreshPostAuthRoute(session);
       } catch (err) {
@@ -324,7 +359,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [acceptedInviteToken, pendingInviteCircleId, refreshPostAuthRoute, session]);
+  }, [acceptedInviteToken, inviteMetaReady, pendingInviteCircleId, refreshPostAuthRoute, session]);
 
   const signInWithGoogle = async () => {
     let capturedCallbackUrl: string | null = null;
@@ -720,11 +755,24 @@ export default function App() {
         devConnectionMessage={connectionMessage}
         devTesting={testing}
         onDevTestConnection={testSupabaseConnection}
+        invitePendingMessage={
+          acceptedInviteToken
+            ? '已收到邀請連結，登入後將自動進入密友圈。'
+            : null
+        }
+      />
+    );
+  } else if (activeCircleId && session) {
+    body = (
+      <CircleDetailScreen
+        circleId={activeCircleId}
+        userId={session.user.id}
+        onBack={() => setActiveCircleId(null)}
       />
     );
   } else if (
     routeLoading ||
-    ((hasOwnerCircle === null || hasUserProfile === null) && !authRouteError)
+    ((hasOwnerCircle === null || hasUserProfile === null) && !authRouteError && !acceptedInviteToken)
   ) {
     body = (
       <View style={styles.centered}>
@@ -762,14 +810,6 @@ export default function App() {
         onShareSocial={(ch) => handlePostShareSocial(ch)}
         onSubmitEmails={(emails) => handlePostEmailInvites(emails)}
         onSkip={handlePostSkipInvites}
-      />
-    );
-  } else if (activeCircleId && session) {
-    body = (
-      <CircleDetailScreen
-        circleId={activeCircleId}
-        userId={session.user.id}
-        onBack={() => setActiveCircleId(null)}
       />
     );
   } else if (!hasOwnerCircle && !hasUserProfile) {

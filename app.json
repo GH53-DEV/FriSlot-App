@@ -13,6 +13,10 @@
       "backgroundColor": "#ffffff"
     },
     "scheme": "frislotnew",
+    "linking": {
+      "scheme": "frislotnew",
+      "prefixes": ["frislotnew://"]
+    },
     "ios": {
       "supportsTablet": true
     },
