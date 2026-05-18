@@ -118,14 +118,6 @@
         display: none;
       }
       .email-form.show { display: block; }
-      .email-form label {
-        display: block;
-        font-size: 13px;
-        color: var(--muted);
-        margin-bottom: 6px;
-        margin-top: 10px;
-      }
-      .email-form label:first-child { margin-top: 0; }
       .email-form input {
         width: 100%;
         font-size: 16px;
@@ -133,6 +125,10 @@
         border: 1px solid #cbd5e1;
         border-radius: 8px;
         background: #fff;
+        margin-top: 10px;
+      }
+      .email-form input:first-of-type {
+        margin-top: 0;
       }
       .email-form input:read-only {
         background: #f1f5f9;
@@ -201,13 +197,9 @@
         </div>
 
         <div class="email-form" id="emailForm">
-          <label for="emailInput">Email</label>
           <input id="emailInput" type="email" placeholder="email" autocomplete="email" />
-          <label for="realNameInput">真實姓名</label>
-          <input id="realNameInput" type="text" placeholder="真實姓名" autocomplete="name" />
-          <label for="displayNameInput">顯示名稱或暱稱</label>
-          <input id="displayNameInput" type="text" placeholder="顯示名稱或暱稱" />
-          <label for="mobileInput">手機號碼</label>
+          <input id="realNameInput" type="text" placeholder="真實姓名_以免暱稱重複" autocomplete="name" />
+          <input id="displayNameInput" type="text" placeholder="暱稱_喜歡大家怎麼稱呼你" />
           <input id="mobileInput" type="tel" placeholder="手機號碼" autocomplete="tel" />
           <button id="emailSubmit" class="submit">回傳並接受邀請</button>
           <p class="hint">資料會寫入邀請與使用者紀錄，安裝 App 後將直接進入此密友圈。</p>
@@ -321,6 +313,21 @@
 
       function openAppDeepLinkOnly() {
         const deepLink = buildAppDeepLink();
+        const isAndroid = /android/i.test(navigator.userAgent);
+        if (isAndroid) {
+          const intentUrl =
+            'intent://invite?' +
+            new URLSearchParams({
+              token,
+              ...(invite && invite.circle_ref ? { circle_id: invite.circle_ref } : {}),
+            }).toString() +
+            '#Intent;scheme=frislotnew;end';
+          window.location.href = intentUrl;
+          setTimeout(function () {
+            window.location.href = deepLink;
+          }, 800);
+          return;
+        }
         window.location.href = deepLink;
       }
 
@@ -356,6 +363,7 @@
         if (row.status !== 'pending') {
           responded = true;
           hideActions(true);
+          show(emailFormEl, false);
           if (row.status === 'accepted') {
             show(installEl, true);
           }

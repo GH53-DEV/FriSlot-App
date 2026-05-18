@@ -30,6 +30,7 @@ import {
   fetchInvitationByToken,
   userExists,
   userHasOwnerCircle,
+  userIsCircleMember,
 } from './src/lib/profileBootstrap';
 import { getGoogleOAuthRedirectUri, getOAuthAuthSessionReturnUrl, isMisconfiguredOAuthRedirect } from './src/lib/authRedirect';
 import {
@@ -252,7 +253,7 @@ export default function App() {
 
   useEffect(() => {
     const user = session?.user;
-    if (!user || !acceptedInviteToken || hasUserProfile !== true) {
+    if (!user || !acceptedInviteToken) {
       return;
     }
     if (claimingInviteTokenRef.current === acceptedInviteToken) {
@@ -262,7 +263,29 @@ export default function App() {
     claimingInviteTokenRef.current = acceptedInviteToken;
     let cancelled = false;
 
+    const resolveInviteNavigation = async (circleId: string | null): Promise<boolean> => {
+      if (!circleId || cancelled) {
+        return false;
+      }
+      try {
+        const isMember = await userIsCircleMember(circleId, user.id);
+        if (!cancelled && isMember) {
+          setActiveCircleId(circleId);
+          setPendingInviteCircleId(null);
+          setAcceptedInviteToken(null);
+          setInviteeProfilePrefill(null);
+          return true;
+        }
+      } catch (memberErr) {
+        if (__DEV__) {
+          console.warn('[invite-member-check]', memberErr);
+        }
+      }
+      return false;
+    };
+
     const claimNow = async () => {
+      let navigated = false;
       try {
         setRouteLoading(true);
         const claim = await claimInvitationForExistingProfile({
@@ -279,11 +302,15 @@ export default function App() {
         if (targetCircleId) {
           setActiveCircleId(targetCircleId);
           setPendingInviteCircleId(null);
+          navigated = true;
         }
         await refreshPostAuthRoute(session);
       } catch (err) {
         if (!cancelled) {
-          Alert.alert('邀請處理失敗', formatErrorMessage(err));
+          navigated = await resolveInviteNavigation(pendingInviteCircleId);
+          if (!navigated) {
+            Alert.alert('邀請處理失敗', formatErrorMessage(err));
+          }
         }
       } finally {
         if (!cancelled) {
@@ -297,7 +324,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [acceptedInviteToken, hasUserProfile, pendingInviteCircleId, refreshPostAuthRoute, session]);
+  }, [acceptedInviteToken, pendingInviteCircleId, refreshPostAuthRoute, session]);
 
   const signInWithGoogle = async () => {
     let capturedCallbackUrl: string | null = null;
@@ -702,7 +729,9 @@ export default function App() {
     body = (
       <View style={styles.centered}>
         <ActivityIndicator size="large" />
-        <Text style={styles.loadingText}>載入中…</Text>
+        <Text style={styles.loadingText}>
+          {acceptedInviteToken ? '正在加入密友圈…' : '載入中…'}
+        </Text>
       </View>
     );
   } else if (session && authRouteError) {
@@ -735,6 +764,14 @@ export default function App() {
         onSkip={handlePostSkipInvites}
       />
     );
+  } else if (activeCircleId && session) {
+    body = (
+      <CircleDetailScreen
+        circleId={activeCircleId}
+        userId={session.user.id}
+        onBack={() => setActiveCircleId(null)}
+      />
+    );
   } else if (!hasOwnerCircle && !hasUserProfile) {
     body = (
       <CirclesOnboardingScreen
@@ -747,14 +784,6 @@ export default function App() {
         onJoiningSubmit={handleJoiningOnboardingSubmit}
         onProfileAndCircleOnly={handleNewUserProfileAndCircle}
         onCancel={handleOnboardingCancel}
-      />
-    );
-  } else if (activeCircleId && session) {
-    body = (
-      <CircleDetailScreen
-        circleId={activeCircleId}
-        userId={session.user.id}
-        onBack={() => setActiveCircleId(null)}
       />
     );
   } else {

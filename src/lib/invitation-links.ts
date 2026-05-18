@@ -6,18 +6,40 @@ function isInviteRoute(parsed: Linking.ParsedURL): boolean {
   return path === 'invite' || hostname === 'invite';
 }
 
+function readQueryParam(url: string, key: string): string | null {
+  const match = url.match(new RegExp(`[?&]${key}=([^&#]+)`, 'i'));
+  if (!match?.[1]) {
+    return null;
+  }
+  try {
+    return decodeURIComponent(match[1].replace(/\+/g, ' ')).trim();
+  } catch {
+    return match[1].trim();
+  }
+}
+
+function isInviteUrl(url: string): boolean {
+  return /invite/i.test(url) && /[?&]token=/i.test(url);
+}
+
 export function parseInvitationTokenFromUrl(url: string | null): string | null {
   if (!url) {
     return null;
   }
 
   const parsed = Linking.parse(url);
-  if (!isInviteRoute(parsed)) {
-    return null;
+  if (isInviteRoute(parsed)) {
+    const token = parsed.queryParams?.token;
+    if (typeof token === 'string' && token.trim()) {
+      return token.trim();
+    }
   }
 
-  const token = parsed.queryParams?.token;
-  return typeof token === 'string' && token.trim() ? token.trim() : null;
+  if (isInviteUrl(url)) {
+    return readQueryParam(url, 'token');
+  }
+
+  return null;
 }
 
 export function parseInvitationCircleIdFromUrl(url: string | null): string | null {
@@ -26,10 +48,16 @@ export function parseInvitationCircleIdFromUrl(url: string | null): string | nul
   }
 
   const parsed = Linking.parse(url);
-  if (!isInviteRoute(parsed)) {
-    return null;
+  if (isInviteRoute(parsed)) {
+    const circleId = parsed.queryParams?.circle_id;
+    if (typeof circleId === 'string' && circleId.trim()) {
+      return circleId.trim();
+    }
   }
 
-  const circleId = parsed.queryParams?.circle_id;
-  return typeof circleId === 'string' && circleId.trim() ? circleId.trim() : null;
+  if (isInviteUrl(url)) {
+    return readQueryParam(url, 'circle_id');
+  }
+
+  return null;
 }

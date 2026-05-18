@@ -67,6 +67,22 @@ export async function userHasOwnerCircle(uid: string): Promise<boolean> {
   return data != null;
 }
 
+export async function userIsCircleMember(circleId: string, uid: string): Promise<boolean> {
+  const { data, error } = await supabase
+    .from(T.circleMembers)
+    .select('id')
+    .eq('circle_ref', circleId)
+    .eq('user_id', uid)
+    .limit(1)
+    .maybeSingle();
+
+  if (error) {
+    throw error;
+  }
+
+  return data != null;
+}
+
 export async function userExists(uid: string): Promise<boolean> {
   const { data, error } = await supabase
     .from(T.users)
