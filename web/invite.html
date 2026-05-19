@@ -74,6 +74,40 @@
         white-space: pre-wrap;
         margin-bottom: 18px;
       }
+      .invitation-card .members {
+        margin-bottom: 18px;
+        padding: 12px 14px;
+        background: #fffbeb;
+        border: 1px dashed var(--paper-edge);
+        border-radius: 8px;
+      }
+      .invitation-card .members-label {
+        font-size: 12px;
+        color: var(--muted);
+        margin-bottom: 8px;
+        letter-spacing: 1px;
+      }
+      .invitation-card .members-list {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px 12px;
+      }
+      .invitation-card .members-list li {
+        font-size: 15px;
+        color: #1e293b;
+        font-weight: 600;
+      }
+      .invitation-card .members-list li::before {
+        content: "· ";
+        color: #b45309;
+        font-weight: 700;
+      }
+      .invitation-card .members.hidden {
+        display: none;
+      }
       .invitation-card .footer {
         font-size: 12px;
         color: var(--muted);
@@ -187,6 +221,10 @@
         <span class="ribbon">FriSlot 邀請函</span>
         <h1 id="title">載入中…</h1>
         <div class="message" id="message"></div>
+        <div class="members hidden" id="members">
+          <div class="members-label">密友圈成員</div>
+          <ul class="members-list" id="membersList"></ul>
+        </div>
         <div class="footer" id="footer"></div>
         <div class="status" id="status"></div>
         <div class="error" id="error"></div>
@@ -226,6 +264,8 @@
 
       const titleEl   = document.getElementById('title');
       const msgEl     = document.getElementById('message');
+      const membersEl = document.getElementById('members');
+      const membersListEl = document.getElementById('membersList');
       const footerEl  = document.getElementById('footer');
       const statusEl  = document.getElementById('status');
       const errorEl   = document.getElementById('error');
@@ -253,6 +293,39 @@
           return vars[k] != null ? vars[k] : '';
         });
         return s.replace(/\\n/g, '\n');
+      }
+
+      function escapeHtml(text) {
+        return String(text || '')
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;');
+      }
+
+      function normalizeNicknames(raw) {
+        if (!raw) return [];
+        if (Array.isArray(raw)) {
+          return raw.map(function (n) { return String(n || '').trim(); }).filter(Boolean);
+        }
+        return [];
+      }
+
+      function formatMemberList(nicknames) {
+        return normalizeNicknames(nicknames).join('、');
+      }
+
+      function renderMembers(nicknames) {
+        const list = normalizeNicknames(nicknames);
+        if (!list.length) {
+          membersEl.classList.add('hidden');
+          membersListEl.innerHTML = '';
+          return;
+        }
+        membersEl.classList.remove('hidden');
+        membersListEl.innerHTML = list
+          .map(function (name) { return '<li>' + escapeHtml(name) + '</li>'; })
+          .join('');
       }
 
       function setButtonsEnabled(enabled) {
@@ -380,13 +453,16 @@
 
       function renderInvitation(row) {
         invite = row;
+        const memberList = formatMemberList(row.circle_member_nicknames);
         const vars = {
           inviter_name: row.inviter_name || '好友',
           inviter_email: row.inviter_email || '',
           circle_name: row.circle_name || '',
+          member_list: memberList,
         };
         titleEl.textContent  = interpolate(row.card_title  || '{{inviter_name}} 邀請你加入 {{circle_name}}', vars);
         msgEl.textContent    = interpolate(row.card_message || '', vars);
+        renderMembers(row.circle_member_nicknames);
         footerEl.textContent = row.card_footer || '';
         installHintEl.textContent = row.install_hint || '接受邀請後，請依下列方式繼續：';
         statusEl.textContent = `目前狀態：${row.status}`;
