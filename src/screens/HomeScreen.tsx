@@ -74,7 +74,15 @@ export function HomeScreen({
                 <Text style={styles.circleName}>
                   {circle.circleName}（{circle.memberCount}）
                 </Text>
-                <Text style={styles.circleRole}>{circle.role === 'owner' ? '圈主' : '成員'}</Text>
+                <Text style={styles.circleRole}>
+                  {circle.role === 'owner' ? '圈主' : '成員'}
+                  {circle.ownerLabel ? ` · 圈主 ${circle.ownerLabel}` : ''}
+                </Text>
+                {circle.memberLabels.length > 0 ? (
+                  <Text style={styles.circleMembers} numberOfLines={2}>
+                    成員：{circle.memberLabels.join('、')}
+                  </Text>
+                ) : null}
               </TouchableOpacity>
             ))
           )}
@@ -219,6 +227,12 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: '#64748b',
     marginTop: 3,
+  },
+  circleMembers: {
+    fontSize: 12,
+    color: '#475569',
+    marginTop: 4,
+    lineHeight: 17,
   },
   circleLoader: {
     marginVertical: 8,

@@ -10,6 +10,7 @@ export type SlotSummary = {
   slotDate: string;
   timeBlock: string;
   createdBy: string;
+  createdByLabel: string;
   sourceCircleRef: string | null;
   status: SlotStatus;
   note: string | null;
@@ -65,12 +66,13 @@ type UserLabelRow = {
   display_name: string | null;
 };
 
-function toSlotSummary(row: SlotRow, visibleCircleIds: string[] = []): SlotSummary {
+function toSlotSummary(row: SlotRow, visibleCircleIds: string[] = [], createdByLabel = row.created_by): SlotSummary {
   return {
     id: row.id,
     slotDate: row.slot_date,
     timeBlock: row.time_block,
     createdBy: row.created_by,
+    createdByLabel,
     sourceCircleRef: row.source_circle_ref,
     status: row.status,
     note: row.note,
@@ -109,6 +111,25 @@ async function fetchSlotVisibility(slotIds: string[]): Promise<Map<string, strin
     bySlot.set(row.slot_id, [...(bySlot.get(row.slot_id) ?? []), row.circle_ref]);
   }
   return bySlot;
+}
+
+async function fetchUserLabels(userIds: string[]): Promise<Map<string, string>> {
+  const labels = new Map<string, string>();
+  const uniqueIds = unique(userIds);
+  if (uniqueIds.length === 0) {
+    return labels;
+  }
+  const { data, error } = await supabase
+    .from(T.users)
+    .select('uid, email, real_name, display_name')
+    .in('uid', uniqueIds);
+  if (error) {
+    throw error;
+  }
+  for (const row of (data ?? []) as UserLabelRow[]) {
+    labels.set(row.uid, userLabel(row, row.uid));
+  }
+  return labels;
 }
 
 export async function createSlot(input: {
@@ -173,7 +194,9 @@ export async function listSlotsForCircle(circleId: string): Promise<SlotSummary[
   }
 
   const visibilityBySlot = await fetchSlotVisibility(slotIds);
-  return ((slots ?? []) as SlotRow[]).map((row) => toSlotSummary(row, visibilityBySlot.get(row.id) ?? []));
+  const rows = (slots ?? []) as SlotRow[];
+  const creatorLabels = await fetchUserLabels(rows.map((row) => row.created_by));
+  return rows.map((row) => toSlotSummary(row, visibilityBySlot.get(row.id) ?? [], creatorLabels.get(row.created_by)));
 }
 
 export async function listVisibleSlotsForUser(uid: string): Promise<SlotSummary[]> {
@@ -209,7 +232,9 @@ export async function listVisibleSlotsForUser(uid: string): Promise<SlotSummary[
   }
 
   const visibilityBySlot = await fetchSlotVisibility(slotIds);
-  return ((slots ?? []) as SlotRow[]).map((row) => toSlotSummary(row, visibilityBySlot.get(row.id) ?? []));
+  const rows = (slots ?? []) as SlotRow[];
+  const creatorLabels = await fetchUserLabels(rows.map((row) => row.created_by));
+  return rows.map((row) => toSlotSummary(row, visibilityBySlot.get(row.id) ?? [], creatorLabels.get(row.created_by)));
 }
 
 export async function getSlotDetail(slotId: string): Promise<SlotDetail | null> {
@@ -226,7 +251,9 @@ export async function getSlotDetail(slotId: string): Promise<SlotDetail | null> 
     return null;
   }
 
+  const slotRow = slot as SlotRow;
   const visibilityBySlot = await fetchSlotVisibility([slotId]);
+  const creatorLabels = await fetchUserLabels([slotRow.created_by]);
   const { data: bookingsData, error: bookingsErr } = await supabase
     .from(T.slotBookings)
     .select('id, slot_id, circle_ref, requested_by, status, message, created_at')
@@ -254,7 +281,7 @@ export async function getSlotDetail(slotId: string): Promise<SlotDetail | null> 
   }
 
   return {
-    ...toSlotSummary(slot as SlotRow, visibilityBySlot.get(slotId) ?? []),
+    ...toSlotSummary(slotRow, visibilityBySlot.get(slotId) ?? [], creatorLabels.get(slotRow.created_by)),
     bookings: bookings.map((booking) => ({
       id: booking.id,
       slotId: booking.slot_id,

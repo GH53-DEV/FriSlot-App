@@ -142,13 +142,16 @@ export function CircleDetailScreen({
           )}
         </View>
         <View style={styles.placeholderBox}>
-          <Text style={styles.placeholderTitle}>顯示</Text>
+          <Text style={styles.placeholderTitle}>悠閒時光</Text>
           {slots.length === 0 ? (
             <Text style={styles.placeholderMuted}>尚無悠閒時光</Text>
           ) : (
             slots.slice(0, 3).map((slot) => (
               <TouchableOpacity key={slot.id} onPress={() => onOpenSlot(slot.id)}>
-                <Text style={styles.linkLine}>{slot.slotDate} · {slot.timeBlock}</Text>
+                <Text style={styles.linkLine}>
+                  {slot.createdByLabel} · {slot.slotDate} · {slot.timeBlock}
+                </Text>
+                <Text style={styles.placeholderMuted}>點擊後可決定是否預約這段時間</Text>
               </TouchableOpacity>
             ))
           )}

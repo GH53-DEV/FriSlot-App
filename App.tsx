@@ -53,6 +53,7 @@ import {
 import { CircleDetailScreen } from './src/screens/CircleDetailScreen';
 import {
   ChooseDateScreen,
+  ChooseCirclesForCreateScreen,
   CirclesScreen,
   CreateCircleScreen,
   CreateEventScreen,
@@ -76,6 +77,7 @@ WebBrowser.maybeCompleteAuthSession();
 type AppView =
   | 'home'
   | 'circleDetail'
+  | 'chooseCreateCircles'
   | 'chooseDate'
   | 'createSlot'
   | 'slotDetail'
@@ -88,7 +90,8 @@ type AppView =
 
 type CreateContext = {
   mode: 'slot' | 'event';
-  circleId: string | null;
+  circleIds: string[];
+  lockCircleSelection: boolean;
   dates: string[];
 };
 
@@ -793,14 +796,38 @@ export default function App() {
     setAppView('circleDetail');
   };
 
-  const startCreateFlow = (mode: 'slot' | 'event', circleId: string | null = null) => {
-    setCreateContext({ mode, circleId, dates: [] });
+  const startCreateFlow = (
+    mode: 'slot' | 'event',
+    circleIds: string[] = [],
+    lockCircleSelection = false,
+  ) => {
+    setCreateContext({ mode, circleIds, lockCircleSelection, dates: [] });
     setAppView('chooseDate');
   };
 
+  const promptHomeCreateFlow = (mode: 'slot' | 'event') => {
+    Alert.alert(mode === 'slot' ? '新增悠閒時光' : '新增活動', '要先選圈嗎？', [
+      {
+        text: '否',
+        onPress: () => startCreateFlow(mode),
+      },
+      {
+        text: '是',
+        onPress: () => {
+          setCreateContext({ mode, circleIds: [], lockCircleSelection: false, dates: [] });
+          setAppView('chooseCreateCircles');
+        },
+      },
+      {
+        text: '取消',
+        style: 'cancel',
+      },
+    ]);
+  };
+
   const returnAfterCreateCancel = () => {
-    if (createContext?.circleId) {
-      openCircleDetail(createContext.circleId);
+    if (createContext?.lockCircleSelection && createContext.circleIds[0]) {
+      openCircleDetail(createContext.circleIds[0]);
       return;
     }
     setAppView('home');
@@ -922,8 +949,8 @@ export default function App() {
           setActiveCircleId(null);
           setAppView('home');
         }}
-        onCreateSlot={(circleId) => startCreateFlow('slot', circleId)}
-        onCreateEvent={(circleId) => startCreateFlow('event', circleId)}
+        onCreateSlot={(circleId) => startCreateFlow('slot', [circleId], true)}
+        onCreateEvent={(circleId) => startCreateFlow('event', [circleId], true)}
         onInviteFriend={inviteFriendFromCircle}
         onOpenSlot={(slotId) => {
           setActiveSlotId(slotId);
@@ -933,6 +960,16 @@ export default function App() {
           setActiveEventId(eventId);
           setAppView('eventDetail');
         }}
+      />
+    );
+  } else if (appView === 'chooseCreateCircles' && createContext) {
+    body = (
+      <ChooseCirclesForCreateScreen
+        mode={createContext.mode}
+        circles={accessibleCircles}
+        onContinue={(circleIds) => startCreateFlow(createContext.mode, circleIds, false)}
+        onSkip={() => startCreateFlow(createContext.mode)}
+        onCancel={() => setAppView('home')}
       />
     );
   } else if (appView === 'chooseDate' && createContext) {
@@ -950,9 +987,10 @@ export default function App() {
     body = (
       <CreateSlotScreen
         userId={session.user.id}
-        selectedDate={createContext.dates[0]}
+        selectedDates={createContext.dates}
         circles={accessibleCircles}
-        defaultCircleId={createContext.circleId}
+        defaultCircleIds={createContext.circleIds}
+        lockCircleSelection={createContext.lockCircleSelection}
         onCreated={(slotId) => {
           setActiveSlotId(slotId);
           setAppView('slotDetail');
@@ -966,9 +1004,12 @@ export default function App() {
         slotId={activeSlotId}
         userId={session.user.id}
         circles={accessibleCircles}
+        contextCircleId={activeCircleId}
         onBack={() => {
-          if (createContext?.circleId) {
-            openCircleDetail(createContext.circleId);
+          if (activeCircleId) {
+            openCircleDetail(activeCircleId);
+          } else if (createContext?.lockCircleSelection && createContext.circleIds[0]) {
+            openCircleDetail(createContext.circleIds[0]);
           } else {
             setAppView('slots');
           }
@@ -981,7 +1022,8 @@ export default function App() {
         userId={session.user.id}
         selectedDates={createContext.dates}
         circles={accessibleCircles}
-        defaultCircleId={createContext.circleId}
+        defaultCircleIds={createContext.circleIds}
+        lockCircleSelection={createContext.lockCircleSelection}
         onCreated={(eventId) => {
           setActiveEventId(eventId);
           setAppView('eventDetail');
@@ -996,8 +1038,10 @@ export default function App() {
         userId={session.user.id}
         circles={accessibleCircles}
         onBack={() => {
-          if (createContext?.circleId) {
-            openCircleDetail(createContext.circleId);
+          if (activeCircleId) {
+            openCircleDetail(activeCircleId);
+          } else if (createContext?.lockCircleSelection && createContext.circleIds[0]) {
+            openCircleDetail(createContext.circleIds[0]);
           } else {
             setAppView('events');
           }
@@ -1054,8 +1098,8 @@ export default function App() {
         circlesLoading={routeLoading}
         circlesError={accessibleCirclesError}
         onOpenCircle={openCircleDetail}
-        onCreateSlot={() => startCreateFlow('slot')}
-        onCreateEvent={() => startCreateFlow('event')}
+        onCreateSlot={() => promptHomeCreateFlow('slot')}
+        onCreateEvent={() => promptHomeCreateFlow('event')}
         onCreateCircle={() => setAppView('createCircle')}
         onOpenCircles={() => setAppView('circles')}
         onOpenSlots={() => {

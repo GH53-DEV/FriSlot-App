@@ -6,6 +6,8 @@ export type CircleSummary = {
   circleName: string;
   role: 'owner' | 'member';
   memberCount: number;
+  ownerLabel: string;
+  memberLabels: string[];
 };
 
 export type CircleDetail = CircleSummary;
@@ -16,10 +18,24 @@ export type CircleMemberSummary = {
   label: string;
 };
 
+type UserLabelRow = {
+  uid: string;
+  email: string | null;
+  real_name: string | null;
+  display_name: string | null;
+};
+
+function userLabel(row: UserLabelRow | undefined, fallback: string): string {
+  if (!row) {
+    return fallback;
+  }
+  return row.display_name?.trim() || row.real_name?.trim() || row.email?.trim() || fallback;
+}
+
 export async function listAccessibleCircles(uid: string): Promise<CircleSummary[]> {
   const { data: owned, error: ownedErr } = await supabase
     .from(T.circles)
-    .select('id, circle_name')
+    .select('id, circle_name, owner_id')
     .eq('owner_id', uid);
 
   if (ownedErr) {
@@ -45,6 +61,8 @@ export async function listAccessibleCircles(uid: string): Promise<CircleSummary[
       circleName: (row.circle_name as string) ?? '',
       role: 'owner',
       memberCount: 0,
+      ownerLabel: '',
+      memberLabels: [],
     });
   }
 
@@ -56,7 +74,7 @@ export async function listAccessibleCircles(uid: string): Promise<CircleSummary[
   if (memberCircleIds.length > 0) {
     const { data: joinedCircles, error: joinedErr } = await supabase
       .from(T.circles)
-      .select('id, circle_name')
+      .select('id, circle_name, owner_id')
       .in('id', memberCircleIds);
 
     if (joinedErr) {
@@ -77,15 +95,17 @@ export async function listAccessibleCircles(uid: string): Promise<CircleSummary[
         circleName: (circle.circle_name as string) ?? '',
         role: roleByCircle.get(circleId) === 'owner' ? 'owner' : 'member',
         memberCount: 0,
+        ownerLabel: '',
+        memberLabels: [],
       });
     }
   }
 
   const circleIds = Array.from(byId.keys());
   if (circleIds.length > 0) {
-    const { data: memberCounts, error: countErr } = await supabase
+    const { data: memberRows, error: countErr } = await supabase
       .from(T.circleMembers)
-      .select('circle_ref')
+      .select('circle_ref, user_id, role')
       .in('circle_ref', circleIds)
       .eq('status', 'active');
 
@@ -94,13 +114,55 @@ export async function listAccessibleCircles(uid: string): Promise<CircleSummary[
     }
 
     const countsByCircle = new Map<string, number>();
-    for (const row of memberCounts ?? []) {
+    const userIds = new Set<string>();
+    for (const row of memberRows ?? []) {
       const circleId = row.circle_ref as string;
       countsByCircle.set(circleId, (countsByCircle.get(circleId) ?? 0) + 1);
+      if (row.user_id) {
+        userIds.add(row.user_id as string);
+      }
+    }
+    for (const row of owned ?? []) {
+      if (row.owner_id) {
+        userIds.add(row.owner_id as string);
+      }
+    }
+
+    const usersById = new Map<string, UserLabelRow>();
+    if (userIds.size > 0) {
+      const { data: users, error: usersErr } = await supabase
+        .from(T.users)
+        .select('uid, email, real_name, display_name')
+        .in('uid', Array.from(userIds));
+      if (usersErr) {
+        throw usersErr;
+      }
+      for (const row of (users ?? []) as UserLabelRow[]) {
+        usersById.set(row.uid, row);
+      }
+    }
+
+    const ownerByCircle = new Map<string, string>();
+    for (const row of owned ?? []) {
+      ownerByCircle.set(row.id as string, row.owner_id as string);
+    }
+    const memberLabelsByCircle = new Map<string, string[]>();
+    for (const row of memberRows ?? []) {
+      const circleId = row.circle_ref as string;
+      const memberId = row.user_id as string;
+      const labels = memberLabelsByCircle.get(circleId) ?? [];
+      labels.push(userLabel(usersById.get(memberId), memberId));
+      memberLabelsByCircle.set(circleId, labels);
+      if (row.role === 'owner' && !ownerByCircle.has(circleId)) {
+        ownerByCircle.set(circleId, memberId);
+      }
     }
 
     for (const circle of byId.values()) {
       circle.memberCount = Math.max(countsByCircle.get(circle.id) ?? 0, circle.role === 'owner' ? 1 : 0);
+      const ownerId = ownerByCircle.get(circle.id);
+      circle.ownerLabel = ownerId ? userLabel(usersById.get(ownerId), ownerId) : '';
+      circle.memberLabels = memberLabelsByCircle.get(circle.id) ?? [];
     }
   }
 
@@ -127,6 +189,8 @@ export async function getCircleForUser(uid: string, circleId: string): Promise<C
       circleName: (circle.circle_name as string) ?? '',
       role: 'owner',
       memberCount: 0,
+      ownerLabel: '',
+      memberLabels: [],
     };
   }
 
@@ -150,6 +214,8 @@ export async function getCircleForUser(uid: string, circleId: string): Promise<C
     circleName: (circle.circle_name as string) ?? '',
     role: membership.role === 'owner' ? 'owner' : 'member',
     memberCount: 0,
+    ownerLabel: '',
+    memberLabels: [],
   };
 }
 
@@ -166,7 +232,7 @@ export async function listCircleMembers(circleId: string): Promise<CircleMemberS
 
   const memberRows = (memberships ?? []) as Array<{ user_id: string; role: string | null }>;
   const userIds = memberRows.map((row) => row.user_id).filter(Boolean);
-  const usersById = new Map<string, { email: string | null; real_name: string | null; display_name: string | null }>();
+  const usersById = new Map<string, UserLabelRow>();
 
   if (userIds.length > 0) {
     const { data: users, error: usersErr } = await supabase
@@ -176,12 +242,8 @@ export async function listCircleMembers(circleId: string): Promise<CircleMemberS
     if (usersErr) {
       throw usersErr;
     }
-    for (const row of (users ?? []) as Array<{ uid: string; email: string | null; real_name: string | null; display_name: string | null }>) {
-      usersById.set(row.uid, {
-        email: row.email,
-        real_name: row.real_name,
-        display_name: row.display_name,
-      });
+    for (const row of (users ?? []) as UserLabelRow[]) {
+      usersById.set(row.uid, row);
     }
   }
 
@@ -190,7 +252,7 @@ export async function listCircleMembers(circleId: string): Promise<CircleMemberS
     return {
       userId: row.user_id,
       role: row.role === 'owner' ? 'owner' : 'member',
-      label: user?.display_name?.trim() || user?.real_name?.trim() || user?.email?.trim() || row.user_id,
+      label: userLabel(user, row.user_id),
     };
   });
 }
