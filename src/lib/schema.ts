@@ -7,4 +7,9 @@ export const T = {
   circles: 'circles',
   circleMembers: 'circle_members',
   invitations: 'invitations',
+  slots: 'slots',
+  slotVisibilityCircles: 'slot_visibility_circles',
+  slotBookings: 'slot_bookings',
+  events: 'events',
+  eventParticipants: 'event_participants',
 } as const;

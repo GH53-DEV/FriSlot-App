@@ -375,3 +375,35 @@ export async function createEmailInvitationsForCircle(
     invitationPayloads,
   };
 }
+
+export async function createCircleForExistingUser(input: {
+  uid: string;
+  circleName: string;
+}): Promise<string> {
+  const { data: circle, error: circleErr } = await supabase
+    .from(T.circles)
+    .insert({
+      circle_name: input.circleName.trim(),
+      owner_id: input.uid,
+    })
+    .select('id')
+    .single();
+
+  if (circleErr) {
+    throw circleErr;
+  }
+
+  const circleId = circle.id as string;
+  const { error: memberErr } = await supabase.from(T.circleMembers).insert({
+    circle_ref: circleId,
+    user_id: input.uid,
+    role: 'owner',
+    status: 'active',
+  });
+
+  if (memberErr) {
+    throw memberErr;
+  }
+
+  return circleId;
+}

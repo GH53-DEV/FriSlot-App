@@ -5,20 +5,40 @@ import {
   ScrollView,
   StyleSheet,
   Text,
+  TouchableOpacity,
   View,
 } from 'react-native';
 import { formatErrorMessage } from '../lib/formatErrorMessage';
-import { getCircleForUser, type CircleDetail } from '../lib/circleAccess';
+import { getCircleForUser, listCircleMembers, type CircleDetail, type CircleMemberSummary } from '../lib/circleAccess';
+import { listSlotsForCircle, type SlotSummary } from '../lib/slots';
+import { listEventsForCircle, type EventSummary } from '../lib/events';
 
 export type CircleDetailScreenProps = {
   circleId: string;
   userId: string;
   onBack: () => void;
+  onCreateSlot: (circleId: string) => void;
+  onCreateEvent: (circleId: string) => void;
+  onInviteFriend: (circleId: string, circleName: string) => void;
+  onOpenSlot: (slotId: string) => void;
+  onOpenEvent: (eventId: string) => void;
 };
 
-export function CircleDetailScreen({ circleId, userId, onBack }: CircleDetailScreenProps) {
+export function CircleDetailScreen({
+  circleId,
+  userId,
+  onBack,
+  onCreateSlot,
+  onCreateEvent,
+  onInviteFriend,
+  onOpenSlot,
+  onOpenEvent,
+}: CircleDetailScreenProps) {
   const [loading, setLoading] = useState(true);
   const [circle, setCircle] = useState<CircleDetail | null>(null);
+  const [members, setMembers] = useState<CircleMemberSummary[]>([]);
+  const [slots, setSlots] = useState<SlotSummary[]>([]);
+  const [events, setEvents] = useState<EventSummary[]>([]);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -37,7 +57,18 @@ export function CircleDetailScreen({ circleId, userId, onBack }: CircleDetailScr
           setError('你沒有權限查看這個密友圈。');
           return;
         }
+        const [memberRows, slotRows, eventRows] = await Promise.all([
+          listCircleMembers(circleId),
+          listSlotsForCircle(circleId),
+          listEventsForCircle(circleId),
+        ]);
+        if (cancelled) {
+          return;
+        }
         setCircle(row);
+        setMembers(memberRows);
+        setSlots(slotRows);
+        setEvents(eventRows);
       } catch (err) {
         if (!cancelled) {
           setError(formatErrorMessage(err));
@@ -82,19 +113,57 @@ export function CircleDetailScreen({ circleId, userId, onBack }: CircleDetailScr
       <View style={styles.panel}>
         <Text style={styles.title}>{circle.circleName}</Text>
         <Text style={styles.subtitle}>circleDetail · {circle.role === 'owner' ? '圈主' : '成員'}</Text>
-        <Text style={styles.note}>此頁先留白，之後會放朋友圈內容。</Text>
 
         <View style={styles.placeholderBox}>
           <Text style={styles.placeholderTitle}>小型回憶_短片或照片</Text>
         </View>
         <View style={styles.placeholderBox}>
           <Text style={styles.placeholderTitle}>活動時間線</Text>
+          {events.length === 0 ? (
+            <Text style={styles.placeholderMuted}>尚無活動</Text>
+          ) : (
+            events.slice(0, 3).map((event) => (
+              <TouchableOpacity key={event.id} onPress={() => onOpenEvent(event.id)}>
+                <Text style={styles.linkLine}>{event.title} · {event.eventDate} · {event.timeBlock}</Text>
+              </TouchableOpacity>
+            ))
+          )}
         </View>
         <View style={styles.placeholderBox}>
-          <Text style={styles.placeholderTitle}>成員</Text>
+          <Text style={styles.placeholderTitle}>成員({members.length})</Text>
+          {members.length === 0 ? (
+            <Text style={styles.placeholderMuted}>尚無成員資料</Text>
+          ) : (
+            members.map((member) => (
+              <Text key={member.userId} style={styles.memberLine}>
+                {member.label}{member.role === 'owner' ? '（圈主）' : ''}
+              </Text>
+            ))
+          )}
         </View>
         <View style={styles.placeholderBox}>
           <Text style={styles.placeholderTitle}>顯示</Text>
+          {slots.length === 0 ? (
+            <Text style={styles.placeholderMuted}>尚無悠閒時光</Text>
+          ) : (
+            slots.slice(0, 3).map((slot) => (
+              <TouchableOpacity key={slot.id} onPress={() => onOpenSlot(slot.id)}>
+                <Text style={styles.linkLine}>{slot.slotDate} · {slot.timeBlock}</Text>
+              </TouchableOpacity>
+            ))
+          )}
+        </View>
+
+        <View style={styles.actionRow}>
+          <TouchableOpacity style={styles.actionBtn} onPress={() => onCreateSlot(circle.id)}>
+            <Text style={styles.actionText}>+ 悠閒時光</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.actionBtn} onPress={() => onCreateEvent(circle.id)}>
+            <Text style={styles.actionText}>+ 新活動</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.actionBtn} onPress={() => onInviteFriend(circle.id, circle.circleName)}>
+            <Text style={styles.actionText}>+ 密友</Text>
+          </TouchableOpacity>
         </View>
 
         <View style={styles.backBtn}>
@@ -157,6 +226,39 @@ const styles = StyleSheet.create({
   placeholderTitle: {
     fontWeight: '600',
     color: '#334155',
+  },
+  placeholderMuted: {
+    color: '#94a3b8',
+    fontSize: 13,
+    marginTop: 6,
+  },
+  memberLine: {
+    fontSize: 13,
+    color: '#475569',
+    marginTop: 6,
+  },
+  linkLine: {
+    color: '#2563eb',
+    fontSize: 13,
+    fontWeight: '600',
+    marginTop: 6,
+  },
+  actionRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginBottom: 16,
+  },
+  actionBtn: {
+    backgroundColor: '#eef2ff',
+    borderRadius: 8,
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+  },
+  actionText: {
+    color: '#4f46e5',
+    fontWeight: '700',
+    fontSize: 12,
   },
   errorTitle: {
     fontSize: 16,

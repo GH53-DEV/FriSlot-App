@@ -18,7 +18,10 @@
       "prefixes": ["frislotnew://"]
     },
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "infoPlist": {
+        "LSApplicationQueriesSchemes": ["line", "whatsapp", "tg"]
+      }
     },
     "android": {
       "adaptiveIcon": {

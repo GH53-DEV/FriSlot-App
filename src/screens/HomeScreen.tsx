@@ -1,53 +1,40 @@
-import { useEffect, useState } from 'react';
-import { ActivityIndicator, Button, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
-import { listAccessibleCircles, type CircleSummary } from '../lib/circleAccess';
-import { formatErrorMessage } from '../lib/formatErrorMessage';
+import { ActivityIndicator, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import type { CircleSummary } from '../lib/circleAccess';
 
 type HomeScreenProps = {
   userLabel: string;
-  userId: string;
+  circles: CircleSummary[];
+  circlesLoading: boolean;
+  circlesError: string | null;
   onOpenCircle: (circleId: string) => void;
+  onCreateSlot: () => void;
+  onCreateEvent: () => void;
+  onCreateCircle: () => void;
+  onOpenCircles: () => void;
+  onOpenSlots: () => void;
+  onOpenEvents: () => void;
   onSignOut: () => void;
 };
 
-export function HomeScreen({ userLabel, userId, onOpenCircle, onSignOut }: HomeScreenProps) {
-  const [circles, setCircles] = useState<CircleSummary[]>([]);
-  const [circlesLoading, setCirclesLoading] = useState(true);
-  const [circlesError, setCirclesError] = useState<string | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-
-    const load = async () => {
-      setCirclesLoading(true);
-      setCirclesError(null);
-      try {
-        const rows = await listAccessibleCircles(userId);
-        if (!cancelled) {
-          setCircles(rows);
-        }
-      } catch (err) {
-        if (!cancelled) {
-          setCirclesError(formatErrorMessage(err));
-        }
-      } finally {
-        if (!cancelled) {
-          setCirclesLoading(false);
-        }
-      }
-    };
-
-    void load();
-    return () => {
-      cancelled = true;
-    };
-  }, [userId]);
+export function HomeScreen({
+  userLabel,
+  circles,
+  circlesLoading,
+  circlesError,
+  onOpenCircle,
+  onCreateSlot,
+  onCreateEvent,
+  onCreateCircle,
+  onOpenCircles,
+  onOpenSlots,
+  onOpenEvents,
+  onSignOut,
+}: HomeScreenProps) {
   return (
     <ScrollView contentContainerStyle={styles.scroll}>
       <View style={styles.panel}>
         <Text style={styles.title}>首頁</Text>
         <Text style={styles.subtitle}>{userLabel}</Text>
-        <Text style={styles.note}>目前這頁先空白（wireframe 占位）</Text>
 
         <View style={styles.placeholderBox}>
           <Text style={styles.placeholderTitle}>小型回顧</Text>
@@ -60,55 +47,68 @@ export function HomeScreen({ userLabel, userId, onOpenCircle, onSignOut }: HomeS
         </View>
 
         <View style={styles.card}>
-          <Text style={styles.cardTitle}>即將到來</Text>
-          <Text style={styles.cardLine}>Amy · 3/8 14:00</Text>
-          <Text style={styles.cardLine}>圈內活動 · 北海道旅行</Text>
+          <Text style={styles.cardTitle}>最新活動訊息</Text>
+          <TouchableOpacity onPress={onOpenEvents}>
+            <Text style={styles.linkLine}>查看活動看板</Text>
+          </TouchableOpacity>
+          <TouchableOpacity onPress={onOpenSlots}>
+            <Text style={styles.linkLine}>查看悠閒時光看板</Text>
+          </TouchableOpacity>
         </View>
 
-        <Text style={styles.section}>我的密友圈</Text>
-        {circlesLoading ? (
-          <ActivityIndicator style={styles.circleLoader} />
-        ) : circlesError ? (
-          <Text style={styles.circleError}>{circlesError}</Text>
-        ) : circles.length === 0 ? (
-          <Text style={styles.listItem}>尚無可進入的密友圈</Text>
-        ) : (
-          circles.map((circle) => (
-            <TouchableOpacity
-              key={circle.id}
-              style={styles.circleRow}
-              onPress={() => onOpenCircle(circle.id)}
-            >
-              <Text style={styles.listItem}>
-                {circle.circleName} ({circle.role === 'owner' ? '圈主' : '成員'})
-              </Text>
-            </TouchableOpacity>
-          ))
-        )}
+        <View style={styles.circleSection}>
+          <Text style={styles.section}>我的密友圈</Text>
+          {circlesLoading ? (
+            <ActivityIndicator style={styles.circleLoader} />
+          ) : circlesError ? (
+            <Text style={styles.circleError}>{circlesError}</Text>
+          ) : circles.length === 0 ? (
+            <Text style={styles.listItem}>尚無可進入的密友圈</Text>
+          ) : (
+            circles.map((circle) => (
+              <TouchableOpacity
+                key={circle.id}
+                style={styles.circleRow}
+                onPress={() => onOpenCircle(circle.id)}
+              >
+                <Text style={styles.circleName}>
+                  {circle.circleName}（{circle.memberCount}）
+                </Text>
+                <Text style={styles.circleRole}>{circle.role === 'owner' ? '圈主' : '成員'}</Text>
+              </TouchableOpacity>
+            ))
+          )}
+        </View>
 
         <View style={styles.fabRow}>
-          <TouchableOpacity style={styles.fab} disabled>
+          <TouchableOpacity style={styles.fab} onPress={onCreateSlot}>
             <Text style={styles.fabText}>+ 悠閒時光</Text>
           </TouchableOpacity>
-          <TouchableOpacity style={styles.fab} disabled>
+          <TouchableOpacity style={styles.fab} onPress={onCreateEvent}>
             <Text style={styles.fabText}>+ 新活動</Text>
           </TouchableOpacity>
-          <TouchableOpacity style={styles.fab} disabled>
+          <TouchableOpacity style={styles.fab} onPress={onCreateCircle}>
             <Text style={styles.fabText}>+ 新密友圈</Text>
           </TouchableOpacity>
         </View>
 
         <View style={styles.tabBar}>
-          {['首頁', '圈', '行事曆', '更多'].map((label) => (
-            <View key={label} style={styles.tabItem}>
-              <Text style={styles.tabIcon}>○</Text>
-              <Text style={styles.tabLabel}>{label}</Text>
-            </View>
-          ))}
-        </View>
-
-        <View style={styles.signOut}>
-          <Button title="登出" onPress={onSignOut} />
+          <TouchableOpacity style={styles.tabItem} onPress={onOpenCircles}>
+            <Text style={styles.tabIcon}>⌂</Text>
+            <Text style={styles.tabLabel}>圈</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.tabItem} onPress={onOpenSlots}>
+            <Text style={styles.tabIcon}>○</Text>
+            <Text style={styles.tabLabel}>slot</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.tabItem} onPress={onOpenEvents}>
+            <Text style={styles.tabIcon}>□</Text>
+            <Text style={styles.tabLabel}>events</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.tabItem} onPress={onSignOut}>
+            <Text style={styles.tabIcon}>↪</Text>
+            <Text style={styles.tabLabel}>logout</Text>
+          </TouchableOpacity>
         </View>
       </View>
     </ScrollView>
@@ -177,10 +177,24 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: '#475569',
   },
+  linkLine: {
+    fontSize: 13,
+    color: '#2563eb',
+    fontWeight: '600',
+    marginTop: 6,
+  },
   section: {
     fontWeight: '600',
     marginBottom: 8,
     color: '#334155',
+  },
+  circleSection: {
+    backgroundColor: '#f8fafc',
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    borderRadius: 10,
+    padding: 12,
+    marginBottom: 12,
   },
   listItem: {
     fontSize: 14,
@@ -188,7 +202,23 @@ const styles = StyleSheet.create({
     marginBottom: 6,
   },
   circleRow: {
-    marginBottom: 4,
+    backgroundColor: '#ffffff',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    marginBottom: 8,
+  },
+  circleName: {
+    fontSize: 15,
+    color: '#334155',
+    fontWeight: '700',
+  },
+  circleRole: {
+    fontSize: 12,
+    color: '#64748b',
+    marginTop: 3,
   },
   circleLoader: {
     marginVertical: 8,
@@ -234,8 +264,5 @@ const styles = StyleSheet.create({
     fontSize: 10,
     color: '#64748b',
     marginTop: 2,
-  },
-  signOut: {
-    marginTop: 8,
   },
 });

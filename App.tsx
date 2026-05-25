@@ -24,6 +24,7 @@ import {
 } from './src/lib/invitationShare';
 import {
   claimInvitationForExistingProfile,
+  createCircleForExistingUser,
   createEmailInvitationsForCircle,
   createFirstCircleAndInvites,
   createShareInvitationForCircle,
@@ -32,6 +33,7 @@ import {
   userHasOwnerCircle,
   userIsCircleMember,
 } from './src/lib/profileBootstrap';
+import { listAccessibleCircles, type CircleSummary } from './src/lib/circleAccess';
 import { getGoogleOAuthRedirectUri, getOAuthAuthSessionReturnUrl, isMisconfiguredOAuthRedirect } from './src/lib/authRedirect';
 import {
   completeOAuthSessionFromUrl,
@@ -50,6 +52,17 @@ import {
 } from './src/lib/pendingInviteStorage';
 import { CircleDetailScreen } from './src/screens/CircleDetailScreen';
 import {
+  ChooseDateScreen,
+  CirclesScreen,
+  CreateCircleScreen,
+  CreateEventScreen,
+  CreateSlotScreen,
+  EventDetailScreen,
+  EventsScreen,
+  SlotDetailScreen,
+  SlotsScreen,
+} from './src/screens/SlotsEventsScreens';
+import {
   CirclesOnboardingScreen,
   PostCircleInviteStep,
   type PostCircleInviteChannel,
@@ -59,6 +72,25 @@ import { HomeScreen } from './src/screens/HomeScreen';
 import { LoginScreen } from './src/screens/LoginScreen';
 
 WebBrowser.maybeCompleteAuthSession();
+
+type AppView =
+  | 'home'
+  | 'circleDetail'
+  | 'chooseDate'
+  | 'createSlot'
+  | 'slotDetail'
+  | 'createEvent'
+  | 'eventDetail'
+  | 'circles'
+  | 'slots'
+  | 'events'
+  | 'createCircle';
+
+type CreateContext = {
+  mode: 'slot' | 'event';
+  circleId: string | null;
+  dates: string[];
+};
 
 export default function App() {
   const [session, setSession] = useState<Session | null>(null);
@@ -86,7 +118,13 @@ export default function App() {
     circleId: string;
     circleName: string;
   } | null>(null);
+  const [appView, setAppView] = useState<AppView>('home');
+  const [accessibleCircles, setAccessibleCircles] = useState<CircleSummary[]>([]);
+  const [accessibleCirclesError, setAccessibleCirclesError] = useState<string | null>(null);
   const [activeCircleId, setActiveCircleId] = useState<string | null>(null);
+  const [activeSlotId, setActiveSlotId] = useState<string | null>(null);
+  const [activeEventId, setActiveEventId] = useState<string | null>(null);
+  const [createContext, setCreateContext] = useState<CreateContext | null>(null);
   const claimingInviteTokenRef = useRef<string | null>(null);
   const postInviteShareUrlRef = useRef<string | null>(null);
   const inviteBaseUrl = (Constants.expoConfig?.extra?.inviteBaseUrl as string | undefined)
@@ -135,6 +173,8 @@ export default function App() {
     if (!current?.user) {
       setHasOwnerCircle(null);
       setHasUserProfile(null);
+      setAccessibleCircles([]);
+      setAccessibleCirclesError(null);
       return;
     }
     setRouteLoading(true);
@@ -142,13 +182,17 @@ export default function App() {
     try {
       const hasCircle = await userHasOwnerCircle(current.user.id);
       const hasProfile = await userExists(current.user.id);
+      const circles = hasProfile ? await listAccessibleCircles(current.user.id) : [];
       setHasOwnerCircle(hasCircle);
       setHasUserProfile(hasProfile);
+      setAccessibleCircles(circles);
+      setAccessibleCirclesError(null);
     } catch (err) {
       if (__DEV__) {
         console.error('[bootstrap]', err);
       }
       setAuthRouteError(formatErrorMessage(err));
+      setAccessibleCirclesError(formatErrorMessage(err));
       setHasOwnerCircle(null);
       setHasUserProfile(null);
     } finally {
@@ -196,6 +240,7 @@ export default function App() {
   const goToCircleDetailAfterInviteStep = useCallback(
     async (circleId: string) => {
       setActiveCircleId(circleId);
+      setAppView('circleDetail');
       setInviteAfterCircle(null);
       postInviteShareUrlRef.current = null;
       if (session) {
@@ -304,6 +349,7 @@ export default function App() {
         const isMember = await userIsCircleMember(circleId, user.id);
         if (!cancelled && isMember) {
           setActiveCircleId(circleId);
+          setAppView('circleDetail');
           setPendingInviteCircleId(null);
           setAcceptedInviteToken(null);
           setInviteeProfilePrefill(null);
@@ -335,6 +381,7 @@ export default function App() {
         const targetCircleId = claim.circleRef ?? pendingInviteCircleId;
         if (targetCircleId) {
           setActiveCircleId(targetCircleId);
+          setAppView('circleDetail');
           setPendingInviteCircleId(null);
           navigated = true;
           await clearPendingInviteDeepLink();
@@ -491,6 +538,12 @@ export default function App() {
     setHasUserProfile(null);
     setAuthRouteError(null);
     setActiveCircleId(null);
+    setActiveSlotId(null);
+    setActiveEventId(null);
+    setCreateContext(null);
+    setAccessibleCircles([]);
+    setAccessibleCirclesError(null);
+    setAppView('home');
     setInviteAfterCircle(null);
   };
 
@@ -582,6 +635,7 @@ export default function App() {
       setAcceptedInviteToken(null);
       if (result.circleId) {
         setActiveCircleId(result.circleId);
+        setAppView('circleDetail');
       }
     } catch (err) {
       Alert.alert('建立失敗', formatErrorMessage(err));
@@ -734,6 +788,47 @@ export default function App() {
     }
   };
 
+  const openCircleDetail = (circleId: string) => {
+    setActiveCircleId(circleId);
+    setAppView('circleDetail');
+  };
+
+  const startCreateFlow = (mode: 'slot' | 'event', circleId: string | null = null) => {
+    setCreateContext({ mode, circleId, dates: [] });
+    setAppView('chooseDate');
+  };
+
+  const returnAfterCreateCancel = () => {
+    if (createContext?.circleId) {
+      openCircleDetail(createContext.circleId);
+      return;
+    }
+    setAppView('home');
+  };
+
+  const handleCreateCircle = async (circleName: string) => {
+    const user = session?.user;
+    if (!user) {
+      return;
+    }
+    try {
+      setOnboardingBusy(true);
+      const circleId = await createCircleForExistingUser({ uid: user.id, circleName });
+      setHasOwnerCircle(true);
+      setHasUserProfile(true);
+      setInviteAfterCircle({ circleId, circleName });
+      await refreshPostAuthRoute(session);
+    } catch (err) {
+      Alert.alert('新增密友圈失敗', formatErrorMessage(err));
+    } finally {
+      setOnboardingBusy(false);
+    }
+  };
+
+  const inviteFriendFromCircle = (circleId: string, circleName: string) => {
+    setInviteAfterCircle({ circleId, circleName });
+  };
+
   const userLabel = session?.user.email ?? session?.user.id ?? '';
 
   let body: ReactNode;
@@ -760,14 +855,6 @@ export default function App() {
             ? '已收到邀請連結，登入後將自動進入密友圈。'
             : null
         }
-      />
-    );
-  } else if (activeCircleId && session) {
-    body = (
-      <CircleDetailScreen
-        circleId={activeCircleId}
-        userId={session.user.id}
-        onBack={() => setActiveCircleId(null)}
       />
     );
   } else if (
@@ -826,12 +913,159 @@ export default function App() {
         onCancel={handleOnboardingCancel}
       />
     );
+  } else if (appView === 'circleDetail' && activeCircleId) {
+    body = (
+      <CircleDetailScreen
+        circleId={activeCircleId}
+        userId={session.user.id}
+        onBack={() => {
+          setActiveCircleId(null);
+          setAppView('home');
+        }}
+        onCreateSlot={(circleId) => startCreateFlow('slot', circleId)}
+        onCreateEvent={(circleId) => startCreateFlow('event', circleId)}
+        onInviteFriend={inviteFriendFromCircle}
+        onOpenSlot={(slotId) => {
+          setActiveSlotId(slotId);
+          setAppView('slotDetail');
+        }}
+        onOpenEvent={(eventId) => {
+          setActiveEventId(eventId);
+          setAppView('eventDetail');
+        }}
+      />
+    );
+  } else if (appView === 'chooseDate' && createContext) {
+    body = (
+      <ChooseDateScreen
+        mode={createContext.mode}
+        onPickDates={(dates) => {
+          setCreateContext({ ...createContext, dates });
+          setAppView(createContext.mode === 'slot' ? 'createSlot' : 'createEvent');
+        }}
+        onCancel={returnAfterCreateCancel}
+      />
+    );
+  } else if (appView === 'createSlot' && createContext?.dates[0]) {
+    body = (
+      <CreateSlotScreen
+        userId={session.user.id}
+        selectedDate={createContext.dates[0]}
+        circles={accessibleCircles}
+        defaultCircleId={createContext.circleId}
+        onCreated={(slotId) => {
+          setActiveSlotId(slotId);
+          setAppView('slotDetail');
+        }}
+        onCancel={returnAfterCreateCancel}
+      />
+    );
+  } else if (appView === 'slotDetail' && activeSlotId) {
+    body = (
+      <SlotDetailScreen
+        slotId={activeSlotId}
+        userId={session.user.id}
+        circles={accessibleCircles}
+        onBack={() => {
+          if (createContext?.circleId) {
+            openCircleDetail(createContext.circleId);
+          } else {
+            setAppView('slots');
+          }
+        }}
+      />
+    );
+  } else if (appView === 'createEvent' && createContext?.dates.length) {
+    body = (
+      <CreateEventScreen
+        userId={session.user.id}
+        selectedDates={createContext.dates}
+        circles={accessibleCircles}
+        defaultCircleId={createContext.circleId}
+        onCreated={(eventId) => {
+          setActiveEventId(eventId);
+          setAppView('eventDetail');
+        }}
+        onCancel={returnAfterCreateCancel}
+      />
+    );
+  } else if (appView === 'eventDetail' && activeEventId) {
+    body = (
+      <EventDetailScreen
+        eventId={activeEventId}
+        userId={session.user.id}
+        circles={accessibleCircles}
+        onBack={() => {
+          if (createContext?.circleId) {
+            openCircleDetail(createContext.circleId);
+          } else {
+            setAppView('events');
+          }
+        }}
+      />
+    );
+  } else if (appView === 'circles') {
+    body = (
+      <CirclesScreen
+        circles={accessibleCircles}
+        onOpenCircle={openCircleDetail}
+        onBack={() => setAppView('home')}
+      />
+    );
+  } else if (appView === 'slots') {
+    body = (
+      <SlotsScreen
+        userId={session.user.id}
+        circles={accessibleCircles}
+        onOpenSlot={(slotId) => {
+          setCreateContext(null);
+          setActiveSlotId(slotId);
+          setAppView('slotDetail');
+        }}
+        onBack={() => setAppView('home')}
+      />
+    );
+  } else if (appView === 'events') {
+    body = (
+      <EventsScreen
+        userId={session.user.id}
+        circles={accessibleCircles}
+        onOpenEvent={(eventId) => {
+          setCreateContext(null);
+          setActiveEventId(eventId);
+          setAppView('eventDetail');
+        }}
+        onBack={() => setAppView('home')}
+      />
+    );
+  } else if (appView === 'createCircle') {
+    body = (
+      <CreateCircleScreen
+        busy={onboardingBusy}
+        onCreate={handleCreateCircle}
+        onCancel={() => setAppView('home')}
+      />
+    );
   } else {
     body = (
       <HomeScreen
         userLabel={userLabel}
-        userId={session.user.id}
-        onOpenCircle={setActiveCircleId}
+        circles={accessibleCircles}
+        circlesLoading={routeLoading}
+        circlesError={accessibleCirclesError}
+        onOpenCircle={openCircleDetail}
+        onCreateSlot={() => startCreateFlow('slot')}
+        onCreateEvent={() => startCreateFlow('event')}
+        onCreateCircle={() => setAppView('createCircle')}
+        onOpenCircles={() => setAppView('circles')}
+        onOpenSlots={() => {
+          setCreateContext(null);
+          setAppView('slots');
+        }}
+        onOpenEvents={() => {
+          setCreateContext(null);
+          setAppView('events');
+        }}
         onSignOut={signOut}
       />
     );

@@ -23,6 +23,11 @@ export async function openEmailForInvitations(links: string[]) {
 
 export async function openLineForInvitations(links: string[]) {
   const message = encodeURIComponent(buildMessage(links));
+  const nativeLineUrl = `line://msg/text/${message}`;
+  if (await Linking.canOpenURL(nativeLineUrl)) {
+    await Linking.openURL(nativeLineUrl);
+    return;
+  }
   const lineUrl = `https://line.me/R/msg/text/?${message}`;
   const canOpen = await Linking.canOpenURL(lineUrl);
   if (!canOpen) {
