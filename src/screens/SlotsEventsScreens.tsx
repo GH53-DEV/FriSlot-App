@@ -109,11 +109,18 @@ function formatDateListLabel(values: string[]): string {
   return `${formatDateLabel(values[0])} - ${formatDateLabel(values[values.length - 1])}`;
 }
 
-const HOUR_OPTIONS = Array.from({ length: 24 }, (_, hour) => hour);
-
-function formatHour(hour: number): string {
-  return `${String(hour).padStart(2, '0')}:00`;
+function formatNumberWithCommas(value: string | number): string {
+  const [integer, decimal] = String(value).split('.');
+  const formattedInteger = integer.replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  return decimal == null ? formattedInteger : `${formattedInteger}.${decimal}`;
 }
+
+function formatIntegerInput(value: string): string {
+  const digits = value.replace(/\D/g, '');
+  return digits ? formatNumberWithCommas(digits) : '';
+}
+
+const TIME_BLOCK_PRESETS = ['上午', '下午', '晚上', '全天'];
 
 function EmptyText({ children }: { children: string }) {
   return <Text style={styles.empty}>{children}</Text>;
@@ -128,36 +135,30 @@ function TimeBlockPicker({
   onChange: (value: string) => void;
   disabled?: boolean;
 }) {
-  const [startHour, setStartHour] = useState<number | null>(null);
+  const selectedValues = value.split('、').map((item) => item.trim()).filter(Boolean);
 
-  const handleHourPress = (hour: number) => {
-    if (startHour == null || hour < startHour) {
-      setStartHour(hour);
-      onChange(`${formatHour(hour)}-${formatHour(hour + 1)}`);
-      return;
-    }
-    onChange(`${formatHour(startHour)}-${formatHour(hour + 1)}`);
+  const togglePreset = (preset: string) => {
+    const next = selectedValues.includes(preset)
+      ? selectedValues.filter((item) => item !== preset)
+      : [...selectedValues, preset];
+    onChange(next.join('、'));
   };
-
-  const selectedRange = value.match(/^(\d{2}):00-(\d{2}):00$/);
-  const selectedStart = selectedRange ? Number(selectedRange[1]) : null;
-  const selectedEnd = selectedRange ? Number(selectedRange[2]) : null;
 
   return (
     <>
-      <Text style={styles.calendarHint}>先點開始小時，再點結束小時；不足 1 小時仍以 1 小時選，細節可寫在備註。</Text>
       <View style={styles.timePresetWrap}>
-        {HOUR_OPTIONS.map((hour) => {
-          const selected = selectedStart != null && selectedEnd != null && hour >= selectedStart && hour < selectedEnd;
+        {TIME_BLOCK_PRESETS.map((preset) => {
+          const selected = selectedValues.includes(preset);
           return (
             <TouchableOpacity
-              key={hour}
+              key={preset}
               style={[styles.timePreset, selected && styles.timePresetSelected]}
-              onPress={() => handleHourPress(hour)}
+              onPress={() => togglePreset(preset)}
               disabled={disabled}
             >
               <Text style={[styles.timePresetText, selected && styles.timePresetTextSelected]}>
-                {formatHour(hour)}
+                {selected ? '● ' : '○ '}
+                {preset}
               </Text>
             </TouchableOpacity>
           );
@@ -311,7 +312,7 @@ export function CreateSlotScreen({
 
   const handleCreate = async () => {
     if (!timeBlock.trim()) {
-      Alert.alert('悠閒時光', '請輸入時段，例如 上午、下午、晚上或 14:00-16:00。');
+      Alert.alert('悠閒時光', '請至少選擇一個時段。');
       return;
     }
     if (selectedDates.length === 0) {
@@ -353,18 +354,13 @@ export function CreateSlotScreen({
         <Text style={styles.hint}>日期：{formatDateListLabel(selectedDates)}</Text>
 
         <TimeBlockPicker value={timeBlock} onChange={setTimeBlock} disabled={busy} />
-        <TextInput
-          style={styles.input}
-          value={timeBlock}
-          onChangeText={setTimeBlock}
-          placeholder="選擇時段，例如 上午 / 下午 / 14:00-16:00"
-          editable={!busy}
-        />
+        <Text style={styles.sectionTitle}>有話要說</Text>
         <TextInput
           style={[styles.input, styles.textArea]}
           value={note}
           onChangeText={setNote}
-          placeholder="備註（可留空）"
+          placeholder="其他細節請在此補充說明，比如 14:15~15:00…"
+          placeholderTextColor="#94a3b8"
           editable={!busy}
           multiline
         />
@@ -441,7 +437,7 @@ export function CreateEventScreen({
   };
 
   const parseOptionalNumber = (value: string): number | null => {
-    const trimmed = value.trim();
+    const trimmed = value.replace(/,/g, '').trim();
     if (!trimmed) {
       return null;
     }
@@ -457,7 +453,7 @@ export function CreateEventScreen({
       return;
     }
     if (!timeBlock.trim()) {
-      Alert.alert('新活動', '請輸入活動時間。');
+      Alert.alert('新活動', '請至少選擇一個時段。');
       return;
     }
     if (selectedDates.length === 0) {
@@ -512,15 +508,8 @@ export function CreateEventScreen({
         <TimeBlockPicker value={timeBlock} onChange={setTimeBlock} disabled={busy} />
         <TextInput
           style={styles.input}
-          value={timeBlock}
-          onChangeText={setTimeBlock}
-          placeholder="選擇時段，例如 晚上 / 19:00-21:00"
-          editable={!busy}
-        />
-        <TextInput
-          style={styles.input}
           value={maxPeople}
-          onChangeText={setMaxPeople}
+          onChangeText={(value) => setMaxPeople(formatIntegerInput(value))}
           placeholder="人數上限（可留空）"
           keyboardType="number-pad"
           editable={!busy}
@@ -548,7 +537,7 @@ export function CreateEventScreen({
         <TextInput
           style={styles.input}
           value={budgetAmount}
-          onChangeText={setBudgetAmount}
+          onChangeText={(value) => setBudgetAmount(formatIntegerInput(value))}
           placeholder={`${budgetType === 'per_person' ? '單人預算' : '總預算'}（可留空）`}
           keyboardType="number-pad"
           editable={!busy}
@@ -634,75 +623,6 @@ export function CreateCircleScreen({
   );
 }
 
-export function ChooseCirclesForCreateScreen({
-  mode,
-  circles,
-  onContinue,
-  onSkip,
-  onCancel,
-}: {
-  mode: CreateMode;
-  circles: CircleSummary[];
-  onContinue: (circleIds: string[]) => void;
-  onSkip: () => void;
-  onCancel: () => void;
-}) {
-  const [selectedCircleIds, setSelectedCircleIds] = useState<string[]>([]);
-  const title = mode === 'slot' ? '悠閒時光要先選圈嗎？' : '新活動要先選圈嗎？';
-
-  const toggleCircle = (circleId: string) => {
-    setSelectedCircleIds((current) =>
-      current.includes(circleId)
-        ? current.filter((id) => id !== circleId)
-        : [...current, circleId],
-    );
-  };
-
-  return (
-    <ScrollView contentContainerStyle={styles.scroll}>
-      <View style={styles.panel}>
-        <Text style={styles.title}>{title}</Text>
-        <Text style={styles.hint}>可先選擇所屬小圈；若先不選，下一步仍可在表單中選擇。</Text>
-
-        {circles.length === 0 ? <EmptyText>尚無可選小圈</EmptyText> : null}
-        {circles.map((circle) => (
-          <TouchableOpacity
-            key={circle.id}
-            style={[styles.choiceRow, selectedCircleIds.includes(circle.id) && styles.choiceRowSelected]}
-            onPress={() => toggleCircle(circle.id)}
-          >
-            <Text style={styles.choiceText}>
-              {selectedCircleIds.includes(circle.id) ? '✓ ' : ''}
-              {circle.circleName}（{circle.memberCount}）
-            </Text>
-            {circle.memberLabels.length > 0 ? (
-              <Text style={styles.cardLine} numberOfLines={2}>
-                成員：{circle.memberLabels.join('、')}
-              </Text>
-            ) : null}
-          </TouchableOpacity>
-        ))}
-
-        <View style={styles.row}>
-          <View style={styles.rowBtn}>
-            <Button
-              title="是，使用所選小圈"
-              onPress={() => onContinue(selectedCircleIds)}
-              disabled={selectedCircleIds.length === 0}
-            />
-          </View>
-          <View style={styles.rowBtn}>
-            <Button title="否，先挑日期" onPress={onSkip} color="#64748b" />
-          </View>
-        </View>
-        <View style={styles.buttonGap}>
-          <Button title="取消" onPress={onCancel} color="#64748b" />
-        </View>
-      </View>
-    </ScrollView>
-  );
-}
-
 export function SlotsScreen({
   userId,
   circles,
@@ -753,9 +673,10 @@ export function SlotsScreen({
         {!loading && !error && slots.length === 0 ? <EmptyText>尚無可看見的悠閒時光</EmptyText> : null}
         {slots.map((slot) => (
           <TouchableOpacity key={slot.id} style={styles.card} onPress={() => onOpenSlot(slot.id)}>
-            <Text style={styles.cardTitle}>{formatDateLabel(slot.slotDate)} · {slot.timeBlock}</Text>
+            <Text style={styles.cardTitle}>{slot.createdByLabel} · {formatDateLabel(slot.slotDate)} · {slot.timeBlock}</Text>
             <Text style={styles.cardLine}>狀態：{statusLabel(slot.status)}</Text>
             <Text style={styles.cardLine}>小圈：{slot.visibleCircleIds.map((id) => circleNameById(circles, id)).join('、')}</Text>
+            {slot.note ? <Text style={styles.cardLine}>有話要說：{slot.note}</Text> : null}
           </TouchableOpacity>
         ))}
         <View style={styles.buttonGap}>
@@ -819,7 +740,10 @@ export function EventsScreen({
             <Text style={styles.cardTitle}>{event.title}</Text>
             <Text style={styles.cardLine}>{formatDateLabel(event.eventDate)} · {event.timeBlock}</Text>
             <Text style={styles.cardLine}>小圈：{circleNameById(circles, event.circleRef)}</Text>
-            <Text style={styles.cardLine}>參加：{event.participantCount}{event.maxPeople ? ` / ${event.maxPeople}` : ''}</Text>
+            <Text style={styles.cardLine}>
+              參加：{formatNumberWithCommas(event.participantCount)}
+              {event.maxPeople ? ` / ${formatNumberWithCommas(event.maxPeople)}` : ''}
+            </Text>
           </TouchableOpacity>
         ))}
         <View style={styles.buttonGap}>
@@ -849,7 +773,7 @@ export function CirclesScreen({
             <Text style={styles.cardTitle}>{circle.circleName}</Text>
             <Text style={styles.cardLine}>
               {circle.role === 'owner' ? '圈主' : '成員'} · 成員 {circle.memberCount}
-              {circle.ownerLabel ? ` · 圈主 ${circle.ownerLabel}` : ''}
+              {circle.ownerLabel ? ` · 圈主：${circle.ownerLabel}` : ''}
             </Text>
             {circle.memberLabels.length > 0 ? (
               <Text style={styles.cardLine}>成員：{circle.memberLabels.join('、')}</Text>
@@ -899,12 +823,12 @@ export function SlotDetailScreen({
     void load();
   }, [slotId]);
 
-  const handleBook = async (circleId: string) => {
+  const handleBook = async (circleId: string, message?: string) => {
     try {
       setBusy(true);
-      await createSlotBooking({ slotId, circleId, requestedBy: userId });
+      await createSlotBooking({ slotId, circleId, requestedBy: userId, message });
       await load();
-      Alert.alert('悠閒時光', '已送出預約。');
+      Alert.alert('悠閒時光', message ? '已送出先聊聊。' : '已送出預約。');
     } catch (err) {
       Alert.alert('預約失敗', formatErrorMessage(err));
     } finally {
@@ -946,29 +870,42 @@ export function SlotDetailScreen({
   const visibleCircles = visibleCircleIds
     .map((circleId) => circles.find((circle) => circle.id === circleId))
     .filter((circle): circle is CircleSummary => Boolean(circle));
+  const bookingCircle = visibleCircles[0];
   const existingBooking = slot.bookings.find((booking) => booking.requestedBy === userId && booking.status !== 'cancelled');
 
   return (
     <ScrollView contentContainerStyle={styles.scroll}>
       <View style={styles.panel}>
         <Text style={styles.title}>悠閒時光</Text>
-        <Text style={styles.hint}>{slot.createdByLabel} · {formatDateLabel(slot.slotDate)} · {slot.timeBlock}</Text>
+        <Text style={styles.cardLine}>誰約的：{slot.createdByLabel}</Text>
+        <Text style={styles.cardLine}>約的時間：{formatDateLabel(slot.slotDate)} · {slot.timeBlock}</Text>
+        <Text style={styles.cardLine}>有話要說：{slot.note || '無'}</Text>
         <Text style={styles.cardLine}>狀態：{statusLabel(slot.status)}</Text>
-        {slot.note ? <Text style={styles.cardLine}>備註：{slot.note}</Text> : null}
 
         <Text style={styles.sectionTitle}>誰想約這個時間</Text>
-        <Text style={styles.cardLine}>小圈成員可自行點「我要約」；不想約可略過。</Text>
-        {visibleCircles.length === 0 ? <EmptyText>沒有可連結的小圈</EmptyText> : null}
-        {visibleCircles.map((circle) => (
-          <View key={circle.id} style={styles.card}>
-            <Text style={styles.cardTitle}>{circle.circleName}</Text>
-            <Button
-              title={existingBooking ? '已送出預約' : '我要約'}
-              onPress={() => void handleBook(circle.id)}
-              disabled={busy || Boolean(existingBooking) || slot.createdBy === userId}
-            />
+        <Text style={styles.cardLine}>可自行點「約」或「先聊聊」；不想約可略過。</Text>
+        {!bookingCircle ? <EmptyText>沒有可連結的小圈</EmptyText> : null}
+        {bookingCircle ? (
+          <View style={styles.card}>
+            <View style={styles.row}>
+              <View style={styles.rowBtn}>
+                <Button
+                  title={existingBooking ? '已送出' : '約'}
+                  onPress={() => void handleBook(bookingCircle.id)}
+                  disabled={busy || Boolean(existingBooking) || slot.createdBy === userId}
+                />
+              </View>
+              <View style={styles.rowBtn}>
+                <Button
+                  title="先聊聊"
+                  onPress={() => void handleBook(bookingCircle.id, '先聊聊')}
+                  disabled={busy || Boolean(existingBooking) || slot.createdBy === userId}
+                  color="#7c3aed"
+                />
+              </View>
+            </View>
           </View>
-        ))}
+        ) : null}
 
         <Text style={styles.sectionTitle}>預約紀錄</Text>
         {slot.bookings.length === 0 ? <EmptyText>尚無預約</EmptyText> : null}
@@ -977,6 +914,7 @@ export function SlotDetailScreen({
             <Text style={styles.cardTitle}>{booking.requesterLabel}</Text>
             <Text style={styles.cardLine}>小圈：{circleNameById(circles, booking.circleRef)}</Text>
             <Text style={styles.cardLine}>狀態：{statusLabel(booking.status)}</Text>
+            {booking.message ? <Text style={styles.cardLine}>留言：{booking.message}</Text> : null}
             {slot.createdBy === userId && booking.status === 'requested' ? (
               <View style={styles.row}>
                 <View style={styles.rowBtn}>
@@ -1081,10 +1019,13 @@ export function EventDetailScreen({
         <Text style={styles.hint}>{formatDateLabel(event.eventDate)} · {event.timeBlock}</Text>
         <Text style={styles.cardLine}>小圈：{circleNameById(circles, event.circleRef)}</Text>
         <Text style={styles.cardLine}>狀態：{statusLabel(event.status)}</Text>
-        <Text style={styles.cardLine}>參加：{event.participantCount}{event.maxPeople ? ` / ${event.maxPeople}` : ''}</Text>
+        <Text style={styles.cardLine}>
+          參加：{formatNumberWithCommas(event.participantCount)}
+          {event.maxPeople ? ` / ${formatNumberWithCommas(event.maxPeople)}` : ''}
+        </Text>
         {event.budgetAmount != null ? (
           <Text style={styles.cardLine}>
-            {event.budgetType === 'total' ? '總預算' : '單人預算'}：{event.budgetAmount}
+            {event.budgetType === 'total' ? '總預算' : '單人預算'}：{formatNumberWithCommas(event.budgetAmount)}
           </Text>
         ) : null}
         {event.description ? <Text style={styles.cardLine}>說明：{event.description}</Text> : null}

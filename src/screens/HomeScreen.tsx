@@ -76,7 +76,7 @@ export function HomeScreen({
                 </Text>
                 <Text style={styles.circleRole}>
                   {circle.role === 'owner' ? '圈主' : '成員'}
-                  {circle.ownerLabel ? ` · 圈主 ${circle.ownerLabel}` : ''}
+                  {circle.ownerLabel ? `：${circle.ownerLabel}` : ''}
                 </Text>
                 {circle.memberLabels.length > 0 ? (
                   <Text style={styles.circleMembers} numberOfLines={2}>

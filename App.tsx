@@ -53,7 +53,6 @@ import {
 import { CircleDetailScreen } from './src/screens/CircleDetailScreen';
 import {
   ChooseDateScreen,
-  ChooseCirclesForCreateScreen,
   CirclesScreen,
   CreateCircleScreen,
   CreateEventScreen,
@@ -77,7 +76,6 @@ WebBrowser.maybeCompleteAuthSession();
 type AppView =
   | 'home'
   | 'circleDetail'
-  | 'chooseCreateCircles'
   | 'chooseDate'
   | 'createSlot'
   | 'slotDetail'
@@ -805,26 +803,6 @@ export default function App() {
     setAppView('chooseDate');
   };
 
-  const promptHomeCreateFlow = (mode: 'slot' | 'event') => {
-    Alert.alert(mode === 'slot' ? '新增悠閒時光' : '新增活動', '要先選圈嗎？', [
-      {
-        text: '否',
-        onPress: () => startCreateFlow(mode),
-      },
-      {
-        text: '是',
-        onPress: () => {
-          setCreateContext({ mode, circleIds: [], lockCircleSelection: false, dates: [] });
-          setAppView('chooseCreateCircles');
-        },
-      },
-      {
-        text: '取消',
-        style: 'cancel',
-      },
-    ]);
-  };
-
   const returnAfterCreateCancel = () => {
     if (createContext?.lockCircleSelection && createContext.circleIds[0]) {
       openCircleDetail(createContext.circleIds[0]);
@@ -962,16 +940,6 @@ export default function App() {
         }}
       />
     );
-  } else if (appView === 'chooseCreateCircles' && createContext) {
-    body = (
-      <ChooseCirclesForCreateScreen
-        mode={createContext.mode}
-        circles={accessibleCircles}
-        onContinue={(circleIds) => startCreateFlow(createContext.mode, circleIds, false)}
-        onSkip={() => startCreateFlow(createContext.mode)}
-        onCancel={() => setAppView('home')}
-      />
-    );
   } else if (appView === 'chooseDate' && createContext) {
     body = (
       <ChooseDateScreen
@@ -1098,8 +1066,8 @@ export default function App() {
         circlesLoading={routeLoading}
         circlesError={accessibleCirclesError}
         onOpenCircle={openCircleDetail}
-        onCreateSlot={() => promptHomeCreateFlow('slot')}
-        onCreateEvent={() => promptHomeCreateFlow('event')}
+        onCreateSlot={() => startCreateFlow('slot')}
+        onCreateEvent={() => startCreateFlow('event')}
         onCreateCircle={() => setAppView('createCircle')}
         onOpenCircles={() => setAppView('circles')}
         onOpenSlots={() => {

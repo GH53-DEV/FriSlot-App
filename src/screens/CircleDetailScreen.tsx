@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Button,
@@ -24,6 +24,93 @@ export type CircleDetailScreenProps = {
   onOpenEvent: (eventId: string) => void;
 };
 
+type EventTimelineItem = {
+  key: string;
+  firstEventId: string;
+  title: string;
+  startDate: string;
+  endDate: string;
+  timeBlock: string;
+  createdAt: string;
+};
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+function eventDateTime(value: string): number {
+  const [year, month, day] = value.split('-').map(Number);
+  if (!year || !month || !day) {
+    return Number.NaN;
+  }
+  return Date.UTC(year, month - 1, day);
+}
+
+function isNextDate(previous: string, current: string): boolean {
+  const previousTime = eventDateTime(previous);
+  const currentTime = eventDateTime(current);
+  return Number.isFinite(previousTime) && Number.isFinite(currentTime) && currentTime - previousTime === DAY_MS;
+}
+
+function formatDateRange(startDate: string, endDate: string): string {
+  return startDate === endDate ? startDate : `${startDate} ~ ${endDate}`;
+}
+
+function eventTimelineKey(event: EventSummary): string {
+  return JSON.stringify([
+    event.title.trim(),
+    event.timeBlock.trim(),
+    event.circleRef,
+    event.createdBy,
+    event.maxPeople,
+    event.budgetType,
+    event.budgetAmount,
+    event.description?.trim() ?? null,
+  ]);
+}
+
+function buildEventTimeline(events: EventSummary[]): EventTimelineItem[] {
+  const buckets = new Map<string, EventSummary[]>();
+  for (const event of events) {
+    const key = eventTimelineKey(event);
+    buckets.set(key, [...(buckets.get(key) ?? []), event]);
+  }
+
+  const timeline: EventTimelineItem[] = [];
+  for (const bucketEvents of buckets.values()) {
+    const sortedEvents = [...bucketEvents].sort(
+      (a, b) =>
+        a.eventDate.localeCompare(b.eventDate) ||
+        a.createdAt.localeCompare(b.createdAt) ||
+        a.id.localeCompare(b.id),
+    );
+
+    let current: EventTimelineItem | null = null;
+    for (const event of sortedEvents) {
+      if (current && isNextDate(current.endDate, event.eventDate)) {
+        current.endDate = event.eventDate;
+        continue;
+      }
+
+      current = {
+        key: event.id,
+        firstEventId: event.id,
+        title: event.title,
+        startDate: event.eventDate,
+        endDate: event.eventDate,
+        timeBlock: event.timeBlock,
+        createdAt: event.createdAt,
+      };
+      timeline.push(current);
+    }
+  }
+
+  return timeline.sort(
+    (a, b) =>
+      a.startDate.localeCompare(b.startDate) ||
+      b.createdAt.localeCompare(a.createdAt) ||
+      a.title.localeCompare(b.title),
+  );
+}
+
 export function CircleDetailScreen({
   circleId,
   userId,
@@ -40,6 +127,7 @@ export function CircleDetailScreen({
   const [slots, setSlots] = useState<SlotSummary[]>([]);
   const [events, setEvents] = useState<EventSummary[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const eventTimeline = useMemo(() => buildEventTimeline(events), [events]);
 
   useEffect(() => {
     let cancelled = false;
@@ -119,12 +207,12 @@ export function CircleDetailScreen({
         </View>
         <View style={styles.placeholderBox}>
           <Text style={styles.placeholderTitle}>活動時間線</Text>
-          {events.length === 0 ? (
+          {eventTimeline.length === 0 ? (
             <Text style={styles.placeholderMuted}>尚無活動</Text>
           ) : (
-            events.slice(0, 3).map((event) => (
-              <TouchableOpacity key={event.id} onPress={() => onOpenEvent(event.id)}>
-                <Text style={styles.linkLine}>{event.title} · {event.eventDate} · {event.timeBlock}</Text>
+            eventTimeline.map((event) => (
+              <TouchableOpacity key={event.key} onPress={() => onOpenEvent(event.firstEventId)}>
+                <Text style={styles.linkLine}>{event.title} · {formatDateRange(event.startDate, event.endDate)} · {event.timeBlock}</Text>
               </TouchableOpacity>
             ))
           )}
@@ -146,12 +234,11 @@ export function CircleDetailScreen({
           {slots.length === 0 ? (
             <Text style={styles.placeholderMuted}>尚無悠閒時光</Text>
           ) : (
-            slots.slice(0, 3).map((slot) => (
+            slots.map((slot) => (
               <TouchableOpacity key={slot.id} onPress={() => onOpenSlot(slot.id)}>
                 <Text style={styles.linkLine}>
                   {slot.createdByLabel} · {slot.slotDate} · {slot.timeBlock}
                 </Text>
-                <Text style={styles.placeholderMuted}>點擊後可決定是否預約這段時間</Text>
               </TouchableOpacity>
             ))
           )}

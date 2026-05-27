@@ -25,11 +25,23 @@ type UserLabelRow = {
   display_name: string | null;
 };
 
-function userLabel(row: UserLabelRow | undefined, fallback: string): string {
-  if (!row) {
-    return fallback;
+function cleanLabel(value: string | null | undefined): string | null {
+  const trimmed = value?.trim();
+  if (!trimmed) {
+    return null;
   }
-  return row.display_name?.trim() || row.real_name?.trim() || row.email?.trim() || fallback;
+  return trimmed.replace(/^(圈主|成員)\s*[:：]?\s*/, '').trim() || trimmed;
+}
+
+function profileLabel(row: UserLabelRow | undefined): string | null {
+  if (!row) {
+    return null;
+  }
+  return cleanLabel(row.display_name) || cleanLabel(row.real_name) || cleanLabel(row.email);
+}
+
+function userLabel(row: UserLabelRow | undefined, fallback: string): string {
+  return profileLabel(row) || fallback;
 }
 
 export async function listAccessibleCircles(uid: string): Promise<CircleSummary[]> {
@@ -53,9 +65,11 @@ export async function listAccessibleCircles(uid: string): Promise<CircleSummary[
   }
 
   const byId = new Map<string, CircleSummary>();
+  const ownerByCircle = new Map<string, string>();
 
   for (const row of owned ?? []) {
     const circleId = row.id as string;
+    ownerByCircle.set(circleId, row.owner_id as string);
     byId.set(circleId, {
       id: circleId,
       circleName: (row.circle_name as string) ?? '',
@@ -87,6 +101,7 @@ export async function listAccessibleCircles(uid: string): Promise<CircleSummary[
 
     for (const circle of joinedCircles ?? []) {
       const circleId = circle.id as string;
+      ownerByCircle.set(circleId, circle.owner_id as string);
       if (byId.has(circleId)) {
         continue;
       }
@@ -127,6 +142,9 @@ export async function listAccessibleCircles(uid: string): Promise<CircleSummary[
         userIds.add(row.owner_id as string);
       }
     }
+    for (const ownerId of ownerByCircle.values()) {
+      userIds.add(ownerId);
+    }
 
     const usersById = new Map<string, UserLabelRow>();
     if (userIds.size > 0) {
@@ -142,16 +160,19 @@ export async function listAccessibleCircles(uid: string): Promise<CircleSummary[
       }
     }
 
-    const ownerByCircle = new Map<string, string>();
-    for (const row of owned ?? []) {
-      ownerByCircle.set(row.id as string, row.owner_id as string);
-    }
     const memberLabelsByCircle = new Map<string, string[]>();
     for (const row of memberRows ?? []) {
       const circleId = row.circle_ref as string;
       const memberId = row.user_id as string;
+      if (ownerByCircle.get(circleId) === memberId) {
+        continue;
+      }
+      const label = profileLabel(usersById.get(memberId));
+      if (!label) {
+        continue;
+      }
       const labels = memberLabelsByCircle.get(circleId) ?? [];
-      labels.push(userLabel(usersById.get(memberId), memberId));
+      labels.push(label);
       memberLabelsByCircle.set(circleId, labels);
       if (row.role === 'owner' && !ownerByCircle.has(circleId)) {
         ownerByCircle.set(circleId, memberId);
