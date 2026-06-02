@@ -632,6 +632,10 @@
           show(emailFormEl, false);
           hideActions(true);
           show(installEl, true);
+          installHintEl.textContent = '邀請已接受，正在開啟 FriSlot App 完成加入密友圈…';
+          setTimeout(function () {
+            openAppDeepLinkOnly();
+          }, 350);
         } catch (err) {
           errorEl.textContent = formatRpcError(err);
           emailSubmit.disabled = false;

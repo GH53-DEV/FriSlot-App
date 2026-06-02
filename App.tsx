@@ -643,6 +643,11 @@ export default function App() {
       setHasOwnerCircle(result.joinedViaInvitation ? false : true);
       setHasUserProfile(true);
       setAcceptedInviteToken(null);
+      if (result.joinedViaInvitation) {
+        setInviteeProfilePrefill(null);
+        setPendingInviteCircleId(null);
+        await clearPendingInviteDeepLink();
+      }
       if (result.circleId) {
         setActiveCircleId(result.circleId);
         setAppView('circleDetail');
