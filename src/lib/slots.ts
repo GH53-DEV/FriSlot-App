@@ -322,12 +322,24 @@ export async function updateSlotBookingStatus(
   bookingId: string,
   status: SlotBookingStatus,
 ): Promise<void> {
-  const { error } = await supabase
+  const { data, error } = await supabase
     .from(T.slotBookings)
     .update({ status })
-    .eq('id', bookingId);
+    .eq('id', bookingId)
+    .select('slot_id')
+    .single();
 
   if (error) {
     throw error;
+  }
+
+  if (status === 'accepted') {
+    const { error: slotErr } = await supabase
+      .from(T.slots)
+      .update({ status: 'booked' })
+      .eq('id', data.slot_id);
+    if (slotErr) {
+      throw slotErr;
+    }
   }
 }

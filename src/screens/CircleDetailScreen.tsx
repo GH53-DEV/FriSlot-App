@@ -36,6 +36,10 @@ type EventTimelineItem = {
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
+function todayIso(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+
 function eventDateTime(value: string): number {
   const [year, month, day] = value.split('-').map(Number);
   if (!year || !month || !day) {
@@ -64,7 +68,20 @@ function eventTimelineKey(event: EventSummary): string {
     event.budgetType,
     event.budgetAmount,
     event.description?.trim() ?? null,
+    event.eventDeadline,
   ]);
+}
+
+function isEventFull(event: EventSummary): boolean {
+  return Boolean(event.maxPeople && event.participantCount >= event.maxPeople);
+}
+
+function isEventDeadlinePassed(event: EventSummary): boolean {
+  return Boolean(event.eventDeadline && event.eventDeadline < todayIso());
+}
+
+function isEventLatestVisible(event: EventSummary): boolean {
+  return event.status !== 'cancelled' && (isEventFull(event) || !isEventDeadlinePassed(event));
 }
 
 function buildEventTimeline(events: EventSummary[]): EventTimelineItem[] {
@@ -127,7 +144,7 @@ export function CircleDetailScreen({
   const [slots, setSlots] = useState<SlotSummary[]>([]);
   const [events, setEvents] = useState<EventSummary[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const eventTimeline = useMemo(() => buildEventTimeline(events), [events]);
+  const eventTimeline = useMemo(() => buildEventTimeline(events.filter(isEventLatestVisible)), [events]);
 
   useEffect(() => {
     let cancelled = false;
@@ -146,7 +163,7 @@ export function CircleDetailScreen({
           return;
         }
         const [memberRows, slotRows, eventRows] = await Promise.all([
-          listCircleMembers(circleId),
+          listCircleMembers(circleId, userId),
           listSlotsForCircle(circleId),
           listEventsForCircle(circleId),
         ]);

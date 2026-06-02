@@ -32,6 +32,20 @@ import {
 } from '../lib/events';
 
 type CreateMode = 'slot' | 'event';
+type GroupedSlot = SlotSummary & {
+  firstSlotId: string;
+  startDate: string;
+  endDate: string;
+  groupKey: string;
+};
+type GroupedEvent = EventSummary & {
+  firstEventId: string;
+  startDate: string;
+  endDate: string;
+  groupKey: string;
+};
+
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 function todayIso(): string {
   return new Date().toISOString().slice(0, 10);
@@ -47,6 +61,36 @@ function formatDateLabel(value: string): string {
     return value;
   }
   return `${date.getFullYear()}/${String(date.getMonth() + 1).padStart(2, '0')}/${String(date.getDate()).padStart(2, '0')}`;
+}
+
+function normalizeDateInput(value: string): string | null {
+  const match = value.trim().match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})$/);
+  if (!match) {
+    return null;
+  }
+  const [, yearValue, monthValue, dayValue] = match;
+  const year = Number(yearValue);
+  const month = Number(monthValue);
+  const day = Number(dayValue);
+  const date = new Date(year, month - 1, day);
+  if (
+    date.getFullYear() !== year ||
+    date.getMonth() !== month - 1 ||
+    date.getDate() !== day
+  ) {
+    return null;
+  }
+  return toIsoDate(date);
+}
+
+function formatEventStatus(event: EventSummary): string {
+  if (event.status === 'cancelled') {
+    return statusLabel(event.status);
+  }
+  if (isEventFull(event) || isEventDeadlinePassed(event) || event.status === 'completed' || event.status === 'full') {
+    return '結束';
+  }
+  return statusLabel(event.status);
 }
 
 function statusLabel(status: string): string {
@@ -74,6 +118,68 @@ function statusLabel(status: string): string {
     default:
       return status;
   }
+}
+
+function isEventFull(event: EventSummary): boolean {
+  return Boolean(event.maxPeople && event.participantCount >= event.maxPeople);
+}
+
+function isEventDeadlinePassed(event: EventSummary): boolean {
+  return Boolean(event.eventDeadline && event.eventDeadline < todayIso());
+}
+
+function isEventRecruitingVisible(event: EventSummary): boolean {
+  return event.status === 'open' && !isEventFull(event) && !isEventDeadlinePassed(event);
+}
+
+function isEventLatestVisible(event: EventSummary): boolean {
+  return event.status !== 'cancelled' && (isEventFull(event) || !isEventDeadlinePassed(event));
+}
+
+function slotEndHour(timeBlock: string): number {
+  const normalized = timeBlock.trim();
+  const timeMatches = Array.from(normalized.matchAll(/(\d{1,2})(?::(\d{2}))?/g));
+  if (timeMatches.length > 0) {
+    const last = timeMatches[timeMatches.length - 1];
+    const hour = Number(last[1]);
+    const minute = Number(last[2] ?? '0');
+    if (Number.isFinite(hour) && hour >= 0 && hour <= 23 && Number.isFinite(minute)) {
+      const isAfternoon = /下午|晚上/.test(normalized) && hour < 12;
+      return (isAfternoon ? hour + 12 : hour) + minute / 60;
+    }
+  }
+  if (normalized.includes('全天') || normalized.includes('晚上')) {
+    return 24;
+  }
+  if (normalized.includes('下午')) {
+    return 18;
+  }
+  if (normalized.includes('上午')) {
+    return 12;
+  }
+  return 24;
+}
+
+function isSlotExpired(slot: Pick<SlotSummary, 'slotDate' | 'timeBlock'>): boolean {
+  const today = todayIso();
+  if (slot.slotDate < today) {
+    return true;
+  }
+  if (slot.slotDate > today) {
+    return false;
+  }
+  const now = new Date();
+  return now.getHours() + now.getMinutes() / 60 >= slotEndHour(slot.timeBlock);
+}
+
+function slotDetailStatusText(slot: Pick<SlotSummary, 'status' | 'slotDate' | 'timeBlock'>): string {
+  if (slot.status === 'open' && !isSlotExpired(slot)) {
+    return '可以約喔!';
+  }
+  if (isSlotExpired(slot)) {
+    return '已過時間';
+  }
+  return statusLabel(slot.status);
 }
 
 function circleNameById(circles: CircleSummary[], circleId: string | null | undefined): string {
@@ -107,6 +213,140 @@ function formatDateListLabel(values: string[]): string {
     return formatDateLabel(values[0]);
   }
   return `${formatDateLabel(values[0])} - ${formatDateLabel(values[values.length - 1])}`;
+}
+
+function dateTime(value: string): number {
+  const [year, month, day] = value.split('-').map(Number);
+  if (!year || !month || !day) {
+    return Number.NaN;
+  }
+  return Date.UTC(year, month - 1, day);
+}
+
+function isNextDate(previous: string, current: string): boolean {
+  const previousTime = dateTime(previous);
+  const currentTime = dateTime(current);
+  return Number.isFinite(previousTime) && Number.isFinite(currentTime) && currentTime - previousTime === DAY_MS;
+}
+
+function formatDateRangeLabel(startDate: string, endDate: string): string {
+  return startDate === endDate ? formatDateLabel(startDate) : `${formatDateLabel(startDate)} - ${formatDateLabel(endDate)}`;
+}
+
+function slotBoardGroupKey(slot: SlotSummary): string {
+  return JSON.stringify([
+    slot.createdBy,
+    slot.timeBlock.trim(),
+    slot.note?.trim() ?? null,
+    [...slot.visibleCircleIds].sort(),
+  ]);
+}
+
+function eventBoardGroupKey(event: EventSummary): string {
+  return JSON.stringify([
+    event.title.trim(),
+    event.timeBlock.trim(),
+    event.circleRef,
+    event.createdBy,
+    event.maxPeople,
+    event.budgetType,
+    event.budgetAmount,
+    event.description?.trim() ?? null,
+    event.eventDeadline,
+  ]);
+}
+
+function groupSlotsForBoard(slots: SlotSummary[]): GroupedSlot[] {
+  const buckets = new Map<string, SlotSummary[]>();
+  for (const slot of slots) {
+    const groupKey = slotBoardGroupKey(slot);
+    buckets.set(groupKey, [...(buckets.get(groupKey) ?? []), slot]);
+  }
+
+  const groups: GroupedSlot[] = [];
+  for (const bucketSlots of buckets.values()) {
+    const sortedSlots = [...bucketSlots].sort(
+      (a, b) =>
+        a.slotDate.localeCompare(b.slotDate) ||
+        a.createdAt.localeCompare(b.createdAt) ||
+        a.id.localeCompare(b.id),
+    );
+
+    let current: GroupedSlot | null = null;
+    for (const slot of sortedSlots) {
+      const groupKey = slotBoardGroupKey(slot);
+      if (
+        current &&
+        slot.timeBlock.trim() === '全天' &&
+        current.timeBlock.trim() === '全天' &&
+        current.groupKey === groupKey &&
+        isNextDate(current.endDate, slot.slotDate)
+      ) {
+        current.endDate = slot.slotDate;
+        continue;
+      }
+
+      current = {
+        ...slot,
+        firstSlotId: slot.id,
+        startDate: slot.slotDate,
+        endDate: slot.slotDate,
+        groupKey,
+      };
+      groups.push(current);
+    }
+  }
+
+  return groups.sort(
+    (a, b) =>
+      a.startDate.localeCompare(b.startDate) ||
+      b.createdAt.localeCompare(a.createdAt) ||
+      a.createdByLabel.localeCompare(b.createdByLabel),
+  );
+}
+
+function groupEventsForBoard(events: EventSummary[]): GroupedEvent[] {
+  const buckets = new Map<string, EventSummary[]>();
+  for (const event of events) {
+    const groupKey = eventBoardGroupKey(event);
+    buckets.set(groupKey, [...(buckets.get(groupKey) ?? []), event]);
+  }
+
+  const groups: GroupedEvent[] = [];
+  for (const bucketEvents of buckets.values()) {
+    const sortedEvents = [...bucketEvents].sort(
+      (a, b) =>
+        a.eventDate.localeCompare(b.eventDate) ||
+        a.createdAt.localeCompare(b.createdAt) ||
+        a.id.localeCompare(b.id),
+    );
+
+    let current: GroupedEvent | null = null;
+    for (const event of sortedEvents) {
+      const groupKey = eventBoardGroupKey(event);
+      if (current && current.groupKey === groupKey && isNextDate(current.endDate, event.eventDate)) {
+        current.endDate = event.eventDate;
+        current.participantCount = Math.max(current.participantCount, event.participantCount);
+        continue;
+      }
+
+      current = {
+        ...event,
+        firstEventId: event.id,
+        startDate: event.eventDate,
+        endDate: event.eventDate,
+        groupKey,
+      };
+      groups.push(current);
+    }
+  }
+
+  return groups.sort(
+    (a, b) =>
+      a.startDate.localeCompare(b.startDate) ||
+      b.createdAt.localeCompare(a.createdAt) ||
+      a.title.localeCompare(b.title),
+  );
 }
 
 function formatNumberWithCommas(value: string | number): string {
@@ -165,6 +405,62 @@ function TimeBlockPicker({
         })}
       </View>
       {value ? <Text style={styles.selectedDateLabel}>已選時段：{value}</Text> : null}
+    </>
+  );
+}
+
+function CircleSearchMultiSelect({
+  title,
+  circles,
+  selectedCircleIds,
+  onToggle,
+  disabled,
+  lockSelection,
+  emptyText = '尚無可選小圈',
+}: {
+  title: string;
+  circles: CircleSummary[];
+  selectedCircleIds: string[];
+  onToggle: (circleId: string) => void;
+  disabled?: boolean;
+  lockSelection?: boolean;
+  emptyText?: string;
+}) {
+  const [query, setQuery] = useState('');
+  const normalizedQuery = query.trim().toLowerCase();
+  const filteredCircles = normalizedQuery
+    ? circles.filter((circle) => circle.circleName.toLowerCase().includes(normalizedQuery))
+    : circles;
+
+  return (
+    <>
+      <Text style={styles.sectionTitle}>{title}</Text>
+      <View style={styles.searchInputWrap}>
+        <Text style={styles.searchIcon}>⌕</Text>
+        <TextInput
+          style={styles.searchInput}
+          value={query}
+          onChangeText={setQuery}
+          placeholder="搜尋小圈"
+          placeholderTextColor="#94a3b8"
+          editable={!disabled && !lockSelection}
+        />
+      </View>
+      {circles.length === 0 ? <EmptyText>{emptyText}</EmptyText> : null}
+      {circles.length > 0 && filteredCircles.length === 0 ? <EmptyText>找不到符合的小圈</EmptyText> : null}
+      {filteredCircles.map((circle) => (
+        <TouchableOpacity
+          key={circle.id}
+          style={[styles.choiceRow, selectedCircleIds.includes(circle.id) && styles.choiceRowSelected]}
+          onPress={() => onToggle(circle.id)}
+          disabled={disabled || lockSelection}
+        >
+          <Text style={styles.choiceText}>
+            {selectedCircleIds.includes(circle.id) ? '✓ ' : ''}
+            {circle.circleName}
+          </Text>
+        </TouchableOpacity>
+      ))}
     </>
   );
 }
@@ -365,24 +661,14 @@ export function CreateSlotScreen({
           multiline
         />
 
-        <Text style={styles.sectionTitle}>顯示給哪些小圈</Text>
-        {selectableCircles.length === 0 ? (
-          <EmptyText>尚無可選小圈</EmptyText>
-        ) : (
-          selectableCircles.map((circle) => (
-            <TouchableOpacity
-              key={circle.id}
-              style={[styles.choiceRow, selectedCircleIds.includes(circle.id) && styles.choiceRowSelected]}
-              onPress={() => toggleCircle(circle.id)}
-              disabled={busy || Boolean(lockCircleSelection)}
-            >
-              <Text style={styles.choiceText}>
-                {selectedCircleIds.includes(circle.id) ? '✓ ' : ''}
-                {circle.circleName}
-              </Text>
-            </TouchableOpacity>
-          ))
-        )}
+        <CircleSearchMultiSelect
+          title="顯示給哪些小圈"
+          circles={selectableCircles}
+          selectedCircleIds={selectedCircleIds}
+          onToggle={toggleCircle}
+          disabled={busy}
+          lockSelection={lockCircleSelection}
+        />
 
         <View style={styles.row}>
           <View style={styles.rowBtn}>
@@ -420,6 +706,7 @@ export function CreateEventScreen({
   const [budgetType, setBudgetType] = useState<'per_person' | 'total'>('per_person');
   const [budgetAmount, setBudgetAmount] = useState('');
   const [description, setDescription] = useState('');
+  const [eventDeadline, setEventDeadline] = useState(() => selectedDates[0] ?? todayIso());
   const [selectedCircleIds, setSelectedCircleIds] = useState<string[]>(() =>
     defaultCircleIds && defaultCircleIds.length > 0 ? defaultCircleIds : circles.length === 1 ? [circles[0].id] : [],
   );
@@ -448,6 +735,7 @@ export function CreateEventScreen({
   const handleCreate = async () => {
     const parsedMaxPeople = parseOptionalNumber(maxPeople);
     const parsedBudgetAmount = parseOptionalNumber(budgetAmount);
+    const normalizedDeadline = normalizeDateInput(eventDeadline);
     if (!title.trim()) {
       Alert.alert('新活動', '請輸入活動主題。');
       return;
@@ -468,6 +756,14 @@ export function CreateEventScreen({
       Alert.alert('新活動', '人數與預算請輸入數字。');
       return;
     }
+    if (!normalizedDeadline) {
+      Alert.alert('新活動', '報名截止日請輸入有效日期，例如 2026-05-29。');
+      return;
+    }
+    if (selectedDates.length > 0 && normalizedDeadline > selectedDates[selectedDates.length - 1]) {
+      Alert.alert('新活動', '報名截止日不可晚於活動日期。');
+      return;
+    }
 
     try {
       setBusy(true);
@@ -484,6 +780,7 @@ export function CreateEventScreen({
             budgetType,
             budgetAmount: parsedBudgetAmount,
             description,
+            eventDeadline: normalizedDeadline,
           });
           firstEventId = firstEventId ?? eventId;
         }
@@ -550,21 +847,23 @@ export function CreateEventScreen({
           editable={!busy}
           multiline
         />
+        <TextInput
+          style={styles.input}
+          value={eventDeadline}
+          onChangeText={setEventDeadline}
+          placeholder="報名截止日（必填，YYYY-MM-DD）"
+          placeholderTextColor="#94a3b8"
+          editable={!busy}
+        />
 
-        <Text style={styles.sectionTitle}>小圈</Text>
-        {selectableCircles.map((circle) => (
-          <TouchableOpacity
-            key={circle.id}
-            style={[styles.choiceRow, selectedCircleIds.includes(circle.id) && styles.choiceRowSelected]}
-            onPress={() => toggleCircle(circle.id)}
-            disabled={busy || Boolean(lockCircleSelection)}
-          >
-            <Text style={styles.choiceText}>
-              {selectedCircleIds.includes(circle.id) ? '✓ ' : ''}
-              {circle.circleName}
-            </Text>
-          </TouchableOpacity>
-        ))}
+        <CircleSearchMultiSelect
+          title="小圈"
+          circles={selectableCircles}
+          selectedCircleIds={selectedCircleIds}
+          onToggle={toggleCircle}
+          disabled={busy}
+          lockSelection={lockCircleSelection}
+        />
 
         <View style={styles.row}>
           <View style={styles.rowBtn}>
@@ -631,7 +930,7 @@ export function SlotsScreen({
 }: {
   userId: string;
   circles: CircleSummary[];
-  onOpenSlot: (slotId: string) => void;
+  onOpenSlot: (slotId: string, dateRange?: { startDate: string; endDate: string }) => void;
   onBack: () => void;
 }) {
   const [slots, setSlots] = useState<SlotSummary[]>([]);
@@ -664,19 +963,23 @@ export function SlotsScreen({
     };
   }, [userId]);
 
+  const groupedSlots = groupSlotsForBoard(slots.filter((slot) => slot.status === 'open' && !isSlotExpired(slot)));
+
   return (
     <ScrollView contentContainerStyle={styles.scroll}>
       <View style={styles.panel}>
         <Text style={styles.title}>悠閒時光看板</Text>
         {loading ? <ActivityIndicator /> : null}
         {error ? <Text style={styles.error}>{error}</Text> : null}
-        {!loading && !error && slots.length === 0 ? <EmptyText>尚無可看見的悠閒時光</EmptyText> : null}
-        {slots.map((slot) => (
-          <TouchableOpacity key={slot.id} style={styles.card} onPress={() => onOpenSlot(slot.id)}>
-            <Text style={styles.cardTitle}>{slot.createdByLabel} · {formatDateLabel(slot.slotDate)} · {slot.timeBlock}</Text>
-            <Text style={styles.cardLine}>狀態：{statusLabel(slot.status)}</Text>
-            <Text style={styles.cardLine}>小圈：{slot.visibleCircleIds.map((id) => circleNameById(circles, id)).join('、')}</Text>
-            {slot.note ? <Text style={styles.cardLine}>有話要說：{slot.note}</Text> : null}
+        {!loading && !error && groupedSlots.length === 0 ? <EmptyText>尚無可看見的悠閒時光</EmptyText> : null}
+        {groupedSlots.map((slot) => (
+          <TouchableOpacity
+            key={slot.firstSlotId}
+            style={styles.card}
+            onPress={() => onOpenSlot(slot.firstSlotId, { startDate: slot.startDate, endDate: slot.endDate })}
+          >
+            <Text style={styles.cardTitle}>{slot.createdByLabel} · {formatDateRangeLabel(slot.startDate, slot.endDate)} · {slot.timeBlock}</Text>
+            {slot.note ? <Text style={styles.cardLine} numberOfLines={1}>{slot.note}</Text> : null}
           </TouchableOpacity>
         ))}
         <View style={styles.buttonGap}>
@@ -695,7 +998,7 @@ export function EventsScreen({
 }: {
   userId: string;
   circles: CircleSummary[];
-  onOpenEvent: (eventId: string) => void;
+  onOpenEvent: (eventId: string, dateRange?: { startDate: string; endDate: string }) => void;
   onBack: () => void;
 }) {
   const [events, setEvents] = useState<EventSummary[]>([]);
@@ -728,17 +1031,27 @@ export function EventsScreen({
     };
   }, [userId]);
 
+  const groupedEvents = groupEventsForBoard(events.filter(isEventRecruitingVisible));
+
   return (
     <ScrollView contentContainerStyle={styles.scroll}>
       <View style={styles.panel}>
-        <Text style={styles.title}>活動看板</Text>
+        <Text style={styles.title}>活動揪人看板</Text>
         {loading ? <ActivityIndicator /> : null}
         {error ? <Text style={styles.error}>{error}</Text> : null}
-        {!loading && !error && events.length === 0 ? <EmptyText>尚無活動</EmptyText> : null}
-        {events.map((event) => (
-          <TouchableOpacity key={event.id} style={styles.card} onPress={() => onOpenEvent(event.id)}>
+        {!loading && !error && groupedEvents.length === 0 ? <EmptyText>尚無活動</EmptyText> : null}
+        {groupedEvents.map((event) => (
+          <TouchableOpacity
+            key={event.firstEventId}
+            style={styles.card}
+            onPress={() => onOpenEvent(event.firstEventId, { startDate: event.startDate, endDate: event.endDate })}
+          >
             <Text style={styles.cardTitle}>{event.title}</Text>
-            <Text style={styles.cardLine}>{formatDateLabel(event.eventDate)} · {event.timeBlock}</Text>
+            <Text style={styles.cardLine}>{formatDateRangeLabel(event.startDate, event.endDate)} · {event.timeBlock}</Text>
+            {event.eventDeadline ? (
+              <Text style={styles.cardLine}>向隅時間：{formatDateLabel(event.eventDeadline)}</Text>
+            ) : null}
+            <Text style={styles.cardLine}>主揪：{event.createdByLabel}</Text>
             <Text style={styles.cardLine}>小圈：{circleNameById(circles, event.circleRef)}</Text>
             <Text style={styles.cardLine}>
               參加：{formatNumberWithCommas(event.participantCount)}
@@ -793,12 +1106,14 @@ export function SlotDetailScreen({
   userId,
   circles,
   contextCircleId,
+  displayDateRange,
   onBack,
 }: {
   slotId: string;
   userId: string;
   circles: CircleSummary[];
   contextCircleId?: string | null;
+  displayDateRange?: { startDate: string; endDate: string } | null;
   onBack: () => void;
 }) {
   const [slot, setSlot] = useState<SlotDetail | null>(null);
@@ -872,18 +1187,18 @@ export function SlotDetailScreen({
     .filter((circle): circle is CircleSummary => Boolean(circle));
   const bookingCircle = visibleCircles[0];
   const existingBooking = slot.bookings.find((booking) => booking.requestedBy === userId && booking.status !== 'cancelled');
+  const slotClosed = slot.status !== 'open' || isSlotExpired(slot);
 
   return (
     <ScrollView contentContainerStyle={styles.scroll}>
       <View style={styles.panel}>
         <Text style={styles.title}>悠閒時光</Text>
-        <Text style={styles.cardLine}>誰約的：{slot.createdByLabel}</Text>
-        <Text style={styles.cardLine}>約的時間：{formatDateLabel(slot.slotDate)} · {slot.timeBlock}</Text>
-        <Text style={styles.cardLine}>有話要說：{slot.note || '無'}</Text>
-        <Text style={styles.cardLine}>狀態：{statusLabel(slot.status)}</Text>
+        <Text style={styles.cardTitle}>
+          {slot.createdByLabel} · {formatDateRangeLabel(displayDateRange?.startDate ?? slot.slotDate, displayDateRange?.endDate ?? slot.slotDate)} · {slot.timeBlock}
+        </Text>
+        {slot.note ? <Text style={styles.cardLine}>{slot.note}</Text> : null}
+        <Text style={styles.cardLine}>{slotDetailStatusText(slot)}</Text>
 
-        <Text style={styles.sectionTitle}>誰想約這個時間</Text>
-        <Text style={styles.cardLine}>可自行點「約」或「先聊聊」；不想約可略過。</Text>
         {!bookingCircle ? <EmptyText>沒有可連結的小圈</EmptyText> : null}
         {bookingCircle ? (
           <View style={styles.card}>
@@ -892,14 +1207,14 @@ export function SlotDetailScreen({
                 <Button
                   title={existingBooking ? '已送出' : '約'}
                   onPress={() => void handleBook(bookingCircle.id)}
-                  disabled={busy || Boolean(existingBooking) || slot.createdBy === userId}
+                  disabled={busy || Boolean(existingBooking) || slot.createdBy === userId || slotClosed}
                 />
               </View>
               <View style={styles.rowBtn}>
                 <Button
                   title="先聊聊"
                   onPress={() => void handleBook(bookingCircle.id, '先聊聊')}
-                  disabled={busy || Boolean(existingBooking) || slot.createdBy === userId}
+                  disabled={busy || Boolean(existingBooking) || slot.createdBy === userId || slotClosed}
                   color="#7c3aed"
                 />
               </View>
@@ -945,11 +1260,13 @@ export function EventDetailScreen({
   eventId,
   userId,
   circles,
+  displayDateRange,
   onBack,
 }: {
   eventId: string;
   userId: string;
   circles: CircleSummary[];
+  displayDateRange?: { startDate: string; endDate: string } | null;
   onBack: () => void;
 }) {
   const [event, setEvent] = useState<EventDetail | null>(null);
@@ -1011,14 +1328,19 @@ export function EventDetailScreen({
 
   const myParticipant = event.participants.find((participant) => participant.userId === userId);
   const isFull = Boolean(event.maxPeople && event.participantCount >= event.maxPeople && myParticipant?.status !== 'joined');
+  const eventClosed = !isEventRecruitingVisible(event);
 
   return (
     <ScrollView contentContainerStyle={styles.scroll}>
       <View style={styles.panel}>
         <Text style={styles.title}>{event.title}</Text>
-        <Text style={styles.hint}>{formatDateLabel(event.eventDate)} · {event.timeBlock}</Text>
+        <Text style={styles.hint}>{formatDateRangeLabel(displayDateRange?.startDate ?? event.eventDate, displayDateRange?.endDate ?? event.eventDate)} · {event.timeBlock}</Text>
         <Text style={styles.cardLine}>小圈：{circleNameById(circles, event.circleRef)}</Text>
-        <Text style={styles.cardLine}>狀態：{statusLabel(event.status)}</Text>
+        {event.eventDeadline ? (
+          <Text style={styles.cardLine}>向隅時間：{formatDateLabel(event.eventDeadline)}</Text>
+        ) : null}
+        <Text style={styles.cardLine}>主揪：{event.createdByLabel}</Text>
+        <Text style={styles.cardLine}>狀態：{formatEventStatus(event)}</Text>
         <Text style={styles.cardLine}>
           參加：{formatNumberWithCommas(event.participantCount)}
           {event.maxPeople ? ` / ${formatNumberWithCommas(event.maxPeople)}` : ''}
@@ -1032,10 +1354,10 @@ export function EventDetailScreen({
 
         <View style={styles.row}>
           <View style={styles.rowBtn}>
-            <Button title="參加" onPress={() => void handleJoin('joined')} disabled={busy || isFull} />
+            <Button title="參加" onPress={() => void handleJoin('joined')} disabled={busy || isFull || eventClosed} />
           </View>
           <View style={styles.rowBtn}>
-            <Button title="先聊聊" onPress={() => void handleJoin('interested')} disabled={busy} color="#7c3aed" />
+            <Button title="先聊聊" onPress={() => void handleJoin('interested')} disabled={busy || eventClosed} color="#7c3aed" />
           </View>
         </View>
         {myParticipant && myParticipant.status !== 'cancelled' ? (
@@ -1180,6 +1502,27 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     marginBottom: 12,
     fontSize: 15,
+  },
+  searchInputWrap: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#cbd5e1',
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    marginBottom: 12,
+  },
+  searchIcon: {
+    color: '#94a3b8',
+    fontSize: 16,
+    fontWeight: '700',
+    marginRight: 8,
+  },
+  searchInput: {
+    flex: 1,
+    paddingVertical: 10,
+    fontSize: 15,
+    color: '#1e293b',
   },
   timePresetWrap: {
     flexDirection: 'row',

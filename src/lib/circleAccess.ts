@@ -25,6 +25,12 @@ type UserLabelRow = {
   display_name: string | null;
 };
 
+type CircleMemberLabelRow = {
+  user_id: string;
+  role: string | null;
+  label: string | null;
+};
+
 function cleanLabel(value: string | null | undefined): string | null {
   const trimmed = value?.trim();
   if (!trimmed) {
@@ -41,7 +47,24 @@ function profileLabel(row: UserLabelRow | undefined): string | null {
 }
 
 function userLabel(row: UserLabelRow | undefined, fallback: string): string {
-  return profileLabel(row) || fallback;
+  return profileLabel(row) || (fallback.includes('@') ? fallback : '密友');
+}
+
+async function listCircleMemberLabels(circleId: string, viewerId?: string): Promise<CircleMemberSummary[]> {
+  const { data, error } = await supabase.rpc('list_circle_members_with_labels', {
+    p_circle_id: circleId,
+    ...(viewerId ? { p_uid: viewerId } : {}),
+  });
+
+  if (error) {
+    throw error;
+  }
+
+  return ((data ?? []) as CircleMemberLabelRow[]).map((row) => ({
+    userId: row.user_id,
+    role: row.role === 'owner' ? 'owner' : 'member',
+    label: cleanLabel(row.label) || '密友',
+  }));
 }
 
 export async function listAccessibleCircles(uid: string): Promise<CircleSummary[]> {
@@ -65,11 +88,9 @@ export async function listAccessibleCircles(uid: string): Promise<CircleSummary[
   }
 
   const byId = new Map<string, CircleSummary>();
-  const ownerByCircle = new Map<string, string>();
 
   for (const row of owned ?? []) {
     const circleId = row.id as string;
-    ownerByCircle.set(circleId, row.owner_id as string);
     byId.set(circleId, {
       id: circleId,
       circleName: (row.circle_name as string) ?? '',
@@ -101,7 +122,6 @@ export async function listAccessibleCircles(uid: string): Promise<CircleSummary[
 
     for (const circle of joinedCircles ?? []) {
       const circleId = circle.id as string;
-      ownerByCircle.set(circleId, circle.owner_id as string);
       if (byId.has(circleId)) {
         continue;
       }
@@ -129,61 +149,26 @@ export async function listAccessibleCircles(uid: string): Promise<CircleSummary[
     }
 
     const countsByCircle = new Map<string, number>();
-    const userIds = new Set<string>();
     for (const row of memberRows ?? []) {
       const circleId = row.circle_ref as string;
       countsByCircle.set(circleId, (countsByCircle.get(circleId) ?? 0) + 1);
-      if (row.user_id) {
-        userIds.add(row.user_id as string);
-      }
-    }
-    for (const row of owned ?? []) {
-      if (row.owner_id) {
-        userIds.add(row.owner_id as string);
-      }
-    }
-    for (const ownerId of ownerByCircle.values()) {
-      userIds.add(ownerId);
     }
 
-    const usersById = new Map<string, UserLabelRow>();
-    if (userIds.size > 0) {
-      const { data: users, error: usersErr } = await supabase
-        .from(T.users)
-        .select('uid, email, real_name, display_name')
-        .in('uid', Array.from(userIds));
-      if (usersErr) {
-        throw usersErr;
-      }
-      for (const row of (users ?? []) as UserLabelRow[]) {
-        usersById.set(row.uid, row);
-      }
-    }
-
-    const memberLabelsByCircle = new Map<string, string[]>();
-    for (const row of memberRows ?? []) {
-      const circleId = row.circle_ref as string;
-      const memberId = row.user_id as string;
-      if (ownerByCircle.get(circleId) === memberId) {
-        continue;
-      }
-      const label = profileLabel(usersById.get(memberId));
-      if (!label) {
-        continue;
-      }
-      const labels = memberLabelsByCircle.get(circleId) ?? [];
-      labels.push(label);
-      memberLabelsByCircle.set(circleId, labels);
-      if (row.role === 'owner' && !ownerByCircle.has(circleId)) {
-        ownerByCircle.set(circleId, memberId);
-      }
-    }
+    const memberSummariesByCircle = new Map<string, CircleMemberSummary[]>();
+    await Promise.all(
+      circleIds.map(async (circleId) => {
+        memberSummariesByCircle.set(circleId, await listCircleMemberLabels(circleId, uid));
+      }),
+    );
 
     for (const circle of byId.values()) {
       circle.memberCount = Math.max(countsByCircle.get(circle.id) ?? 0, circle.role === 'owner' ? 1 : 0);
-      const ownerId = ownerByCircle.get(circle.id);
-      circle.ownerLabel = ownerId ? userLabel(usersById.get(ownerId), ownerId) : '';
-      circle.memberLabels = memberLabelsByCircle.get(circle.id) ?? [];
+      const memberSummaries = memberSummariesByCircle.get(circle.id) ?? [];
+      const owner = memberSummaries.find((member) => member.role === 'owner');
+      circle.ownerLabel = owner?.label ?? '';
+      circle.memberLabels = memberSummaries
+        .filter((member) => member.role !== 'owner')
+        .map((member) => member.label);
     }
   }
 
@@ -240,40 +225,6 @@ export async function getCircleForUser(uid: string, circleId: string): Promise<C
   };
 }
 
-export async function listCircleMembers(circleId: string): Promise<CircleMemberSummary[]> {
-  const { data: memberships, error: memberErr } = await supabase
-    .from(T.circleMembers)
-    .select('user_id, role')
-    .eq('circle_ref', circleId)
-    .eq('status', 'active');
-
-  if (memberErr) {
-    throw memberErr;
-  }
-
-  const memberRows = (memberships ?? []) as Array<{ user_id: string; role: string | null }>;
-  const userIds = memberRows.map((row) => row.user_id).filter(Boolean);
-  const usersById = new Map<string, UserLabelRow>();
-
-  if (userIds.length > 0) {
-    const { data: users, error: usersErr } = await supabase
-      .from(T.users)
-      .select('uid, email, real_name, display_name')
-      .in('uid', userIds);
-    if (usersErr) {
-      throw usersErr;
-    }
-    for (const row of (users ?? []) as UserLabelRow[]) {
-      usersById.set(row.uid, row);
-    }
-  }
-
-  return memberRows.map((row) => {
-    const user = usersById.get(row.user_id);
-    return {
-      userId: row.user_id,
-      role: row.role === 'owner' ? 'owner' : 'member',
-      label: userLabel(user, row.user_id),
-    };
-  });
+export async function listCircleMembers(circleId: string, viewerId?: string): Promise<CircleMemberSummary[]> {
+  return listCircleMemberLabels(circleId, viewerId);
 }

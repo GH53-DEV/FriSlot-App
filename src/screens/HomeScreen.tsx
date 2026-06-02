@@ -49,7 +49,7 @@ export function HomeScreen({
         <View style={styles.card}>
           <Text style={styles.cardTitle}>最新活動訊息</Text>
           <TouchableOpacity onPress={onOpenEvents}>
-            <Text style={styles.linkLine}>查看活動看板</Text>
+            <Text style={styles.linkLine}>查看活動揪人看板</Text>
           </TouchableOpacity>
           <TouchableOpacity onPress={onOpenSlots}>
             <Text style={styles.linkLine}>查看悠閒時光看板</Text>

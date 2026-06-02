@@ -14,7 +14,7 @@ export async function upsertUserFromAuth(user: User) {
 
   const { data: existing, error: selErr } = await supabase
     .from(T.users)
-    .select('uid')
+    .select('uid, email, display_name, photo_url, mobile')
     .eq('uid', user.id)
     .maybeSingle();
 
@@ -40,9 +40,9 @@ export async function upsertUserFromAuth(user: User) {
   const { error } = await supabase
     .from(T.users)
     .update({
-      email: user.email ?? null,
-      display_name: displayName,
-      photo_url: photoUrl,
+      email: existing.email ?? user.email ?? null,
+      display_name: existing.display_name ?? displayName,
+      photo_url: existing.photo_url ?? photoUrl,
     })
     .eq('uid', user.id);
 
@@ -180,14 +180,24 @@ export type InvitationLinkPayload = {
 };
 
 export async function createFirstCircleAndInvites(input: CreateFirstCircleInput) {
+  const { data: existingUser, error: existingUserErr } = await supabase
+    .from(T.users)
+    .select('uid, email, real_name, display_name, photo_url, mobile')
+    .eq('uid', input.uid)
+    .maybeSingle();
+
+  if (existingUserErr) {
+    throw existingUserErr;
+  }
+
   const { error: uErr } = await supabase.from(T.users).upsert(
     {
       uid: input.uid,
-      email: input.email ?? null,
-      real_name: input.realName?.trim() || null,
-      display_name: input.displayName.trim() || null,
-      photo_url: input.photoUrl ?? null,
-      mobile: input.mobile.trim() || null,
+      email: existingUser?.email ?? input.email ?? null,
+      real_name: existingUser?.real_name ?? (input.realName?.trim() || null),
+      display_name: existingUser?.display_name ?? (input.displayName.trim() || null),
+      photo_url: existingUser?.photo_url ?? input.photoUrl ?? null,
+      mobile: existingUser?.mobile ?? (input.mobile.trim() || null),
     },
     { onConflict: 'uid' }
   );

@@ -18,7 +18,9 @@ export type EventSummary = {
   budgetType: EventBudgetType;
   budgetAmount: number | null;
   description: string | null;
+  eventDeadline: string | null;
   createdAt: string;
+  createdByLabel: string;
   participantCount: number;
 };
 
@@ -46,6 +48,7 @@ type EventRow = {
   budget_type: EventBudgetType | null;
   budget_amount: number | null;
   description: string | null;
+  event_deadline: string | null;
   created_at: string;
 };
 
@@ -63,7 +66,7 @@ type UserLabelRow = {
   display_name: string | null;
 };
 
-function toEventSummary(row: EventRow, participantCount = 0): EventSummary {
+function toEventSummary(row: EventRow, participantCount = 0, createdByLabel = row.created_by): EventSummary {
   return {
     id: row.id,
     title: row.title,
@@ -76,7 +79,9 @@ function toEventSummary(row: EventRow, participantCount = 0): EventSummary {
     budgetType: row.budget_type ?? 'per_person',
     budgetAmount: row.budget_amount,
     description: row.description,
+    eventDeadline: row.event_deadline,
     createdAt: row.created_at,
+    createdByLabel,
     participantCount,
   };
 }
@@ -92,6 +97,25 @@ function unique(values: string[]): string[] {
   return Array.from(new Set(values.filter(Boolean)));
 }
 
+async function fetchUserLabels(userIds: string[]): Promise<Map<string, string>> {
+  const labels = new Map<string, string>();
+  const uniqueIds = unique(userIds);
+  if (uniqueIds.length === 0) {
+    return labels;
+  }
+  const { data, error } = await supabase
+    .from(T.users)
+    .select('uid, email, real_name, display_name')
+    .in('uid', uniqueIds);
+  if (error) {
+    throw error;
+  }
+  for (const row of (data ?? []) as UserLabelRow[]) {
+    labels.set(row.uid, userLabel(row, row.uid));
+  }
+  return labels;
+}
+
 async function fetchParticipantCounts(eventIds: string[]): Promise<Map<string, number>> {
   const counts = new Map<string, number>();
   if (eventIds.length === 0) {
@@ -102,7 +126,7 @@ async function fetchParticipantCounts(eventIds: string[]): Promise<Map<string, n
     .from(T.eventParticipants)
     .select('event_id, user_id, status')
     .in('event_id', eventIds)
-    .neq('status', 'cancelled');
+    .eq('status', 'joined');
 
   if (error) {
     throw error;
@@ -124,6 +148,7 @@ export async function createEvent(input: {
   budgetType?: EventBudgetType;
   budgetAmount?: number | null;
   description?: string | null;
+  eventDeadline?: string | null;
 }): Promise<string> {
   const { data: eventId, error } = await supabase.rpc('create_event_with_participant', {
     p_title: input.title.trim(),
@@ -135,6 +160,7 @@ export async function createEvent(input: {
     p_budget_type: input.budgetType ?? 'per_person',
     p_budget_amount: input.budgetAmount ?? null,
     p_description: input.description?.trim() || null,
+    p_event_deadline: input.eventDeadline ?? null,
   });
 
   if (error) {
@@ -147,7 +173,7 @@ export async function createEvent(input: {
 export async function listEventsForCircle(circleId: string): Promise<EventSummary[]> {
   const { data, error } = await supabase
     .from(T.events)
-    .select('id, title, event_date, time_block, status, circle_ref, created_by, max_people, budget_type, budget_amount, description, created_at')
+    .select('id, title, event_date, time_block, status, circle_ref, created_by, max_people, budget_type, budget_amount, description, event_deadline, created_at')
     .eq('circle_ref', circleId)
     .order('event_date', { ascending: true })
     .order('created_at', { ascending: false });
@@ -158,7 +184,8 @@ export async function listEventsForCircle(circleId: string): Promise<EventSummar
 
   const rows = (data ?? []) as EventRow[];
   const counts = await fetchParticipantCounts(rows.map((row) => row.id));
-  return rows.map((row) => toEventSummary(row, counts.get(row.id) ?? 0));
+  const creatorLabels = await fetchUserLabels(rows.map((row) => row.created_by));
+  return rows.map((row) => toEventSummary(row, counts.get(row.id) ?? 0, creatorLabels.get(row.created_by)));
 }
 
 export async function listVisibleEventsForUser(uid: string): Promise<EventSummary[]> {
@@ -170,7 +197,7 @@ export async function listVisibleEventsForUser(uid: string): Promise<EventSummar
 
   const { data, error } = await supabase
     .from(T.events)
-    .select('id, title, event_date, time_block, status, circle_ref, created_by, max_people, budget_type, budget_amount, description, created_at')
+    .select('id, title, event_date, time_block, status, circle_ref, created_by, max_people, budget_type, budget_amount, description, event_deadline, created_at')
     .in('circle_ref', circleIds)
     .order('event_date', { ascending: true })
     .order('created_at', { ascending: false });
@@ -181,13 +208,14 @@ export async function listVisibleEventsForUser(uid: string): Promise<EventSummar
 
   const rows = (data ?? []) as EventRow[];
   const counts = await fetchParticipantCounts(rows.map((row) => row.id));
-  return rows.map((row) => toEventSummary(row, counts.get(row.id) ?? 0));
+  const creatorLabels = await fetchUserLabels(rows.map((row) => row.created_by));
+  return rows.map((row) => toEventSummary(row, counts.get(row.id) ?? 0, creatorLabels.get(row.created_by)));
 }
 
 export async function getEventDetail(eventId: string): Promise<EventDetail | null> {
   const { data: event, error: eventErr } = await supabase
     .from(T.events)
-    .select('id, title, event_date, time_block, status, circle_ref, created_by, max_people, budget_type, budget_amount, description, created_at')
+    .select('id, title, event_date, time_block, status, circle_ref, created_by, max_people, budget_type, budget_amount, description, event_deadline, created_at')
     .eq('id', eventId)
     .maybeSingle();
 
@@ -209,7 +237,8 @@ export async function getEventDetail(eventId: string): Promise<EventDetail | nul
   }
 
   const participants = (participantsData ?? []) as EventParticipantRow[];
-  const userIds = unique(participants.map((participant) => participant.user_id));
+  const eventRow = event as EventRow;
+  const userIds = unique([...participants.map((participant) => participant.user_id), eventRow.created_by]);
   const usersById = new Map<string, UserLabelRow>();
   if (userIds.length > 0) {
     const { data: users, error: usersErr } = await supabase
@@ -224,9 +253,9 @@ export async function getEventDetail(eventId: string): Promise<EventDetail | nul
     }
   }
 
-  const activeParticipantCount = participants.filter((participant) => participant.status !== 'cancelled').length;
+  const activeParticipantCount = participants.filter((participant) => participant.status === 'joined').length;
   return {
-    ...toEventSummary(event as EventRow, activeParticipantCount),
+    ...toEventSummary(eventRow, activeParticipantCount, userLabel(usersById.get(eventRow.created_by), eventRow.created_by)),
     participants: participants.map((participant) => ({
       eventId: participant.event_id,
       userId: participant.user_id,

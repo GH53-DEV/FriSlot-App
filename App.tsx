@@ -93,6 +93,11 @@ type CreateContext = {
   dates: string[];
 };
 
+type ActiveDateRange = {
+  startDate: string;
+  endDate: string;
+};
+
 export default function App() {
   const [session, setSession] = useState<Session | null>(null);
   /** Avoid showing Login before AsyncStorage session is read (prevents OAuth race with stale session). */
@@ -125,6 +130,8 @@ export default function App() {
   const [activeCircleId, setActiveCircleId] = useState<string | null>(null);
   const [activeSlotId, setActiveSlotId] = useState<string | null>(null);
   const [activeEventId, setActiveEventId] = useState<string | null>(null);
+  const [activeSlotDateRange, setActiveSlotDateRange] = useState<ActiveDateRange | null>(null);
+  const [activeEventDateRange, setActiveEventDateRange] = useState<ActiveDateRange | null>(null);
   const [createContext, setCreateContext] = useState<CreateContext | null>(null);
   const claimingInviteTokenRef = useRef<string | null>(null);
   const postInviteShareUrlRef = useRef<string | null>(null);
@@ -541,6 +548,8 @@ export default function App() {
     setActiveCircleId(null);
     setActiveSlotId(null);
     setActiveEventId(null);
+    setActiveSlotDateRange(null);
+    setActiveEventDateRange(null);
     setCreateContext(null);
     setAccessibleCircles([]);
     setAccessibleCirclesError(null);
@@ -932,10 +941,12 @@ export default function App() {
         onInviteFriend={inviteFriendFromCircle}
         onOpenSlot={(slotId) => {
           setActiveSlotId(slotId);
+          setActiveSlotDateRange(null);
           setAppView('slotDetail');
         }}
         onOpenEvent={(eventId) => {
           setActiveEventId(eventId);
+          setActiveEventDateRange(null);
           setAppView('eventDetail');
         }}
       />
@@ -961,6 +972,14 @@ export default function App() {
         lockCircleSelection={createContext.lockCircleSelection}
         onCreated={(slotId) => {
           setActiveSlotId(slotId);
+          setActiveSlotDateRange(
+            createContext.dates.length > 1
+              ? {
+                  startDate: createContext.dates[0],
+                  endDate: createContext.dates[createContext.dates.length - 1],
+                }
+              : null,
+          );
           setAppView('slotDetail');
         }}
         onCancel={returnAfterCreateCancel}
@@ -973,6 +992,7 @@ export default function App() {
         userId={session.user.id}
         circles={accessibleCircles}
         contextCircleId={activeCircleId}
+        displayDateRange={activeSlotDateRange}
         onBack={() => {
           if (activeCircleId) {
             openCircleDetail(activeCircleId);
@@ -994,6 +1014,14 @@ export default function App() {
         lockCircleSelection={createContext.lockCircleSelection}
         onCreated={(eventId) => {
           setActiveEventId(eventId);
+          setActiveEventDateRange(
+            createContext.dates.length > 1
+              ? {
+                  startDate: createContext.dates[0],
+                  endDate: createContext.dates[createContext.dates.length - 1],
+                }
+              : null,
+          );
           setAppView('eventDetail');
         }}
         onCancel={returnAfterCreateCancel}
@@ -1005,6 +1033,7 @@ export default function App() {
         eventId={activeEventId}
         userId={session.user.id}
         circles={accessibleCircles}
+        displayDateRange={activeEventDateRange}
         onBack={() => {
           if (activeCircleId) {
             openCircleDetail(activeCircleId);
@@ -1029,9 +1058,10 @@ export default function App() {
       <SlotsScreen
         userId={session.user.id}
         circles={accessibleCircles}
-        onOpenSlot={(slotId) => {
+        onOpenSlot={(slotId, dateRange) => {
           setCreateContext(null);
           setActiveSlotId(slotId);
+          setActiveSlotDateRange(dateRange ?? null);
           setAppView('slotDetail');
         }}
         onBack={() => setAppView('home')}
@@ -1042,9 +1072,10 @@ export default function App() {
       <EventsScreen
         userId={session.user.id}
         circles={accessibleCircles}
-        onOpenEvent={(eventId) => {
+        onOpenEvent={(eventId, dateRange) => {
           setCreateContext(null);
           setActiveEventId(eventId);
+          setActiveEventDateRange(dateRange ?? null);
           setAppView('eventDetail');
         }}
         onBack={() => setAppView('home')}
