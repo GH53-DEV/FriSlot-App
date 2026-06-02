@@ -287,6 +287,7 @@
       let responded = false;
       let submitInFlight = false;
       let invite = null;
+      let existingInviteeProfile = null;
 
       function interpolate(template, vars) {
         var s = String(template || '').replace(/\{\{(\w+)\}\}/g, function (_, k) {
@@ -520,10 +521,70 @@
         });
       }
 
+      async function lookupInviteeProfile(email) {
+        const normalizedEmail = (email || '').trim();
+        if (!normalizedEmail) {
+          return null;
+        }
+        const data = await rpc('get_invitation_invitee_profile', {
+          p_token: token,
+          p_email: normalizedEmail,
+        });
+        const row = Array.isArray(data) ? data[0] : null;
+        return row && row.has_user ? row : null;
+      }
+
+      function setProfileInputState(input, value) {
+        const text = String(value || '').trim();
+        input.value = text;
+        input.readOnly = Boolean(text);
+      }
+
+      function clearExistingProfileLocks() {
+        existingInviteeProfile = null;
+        realNameInput.readOnly = false;
+        displayNameInput.readOnly = false;
+        mobileInput.readOnly = false;
+      }
+
+      function applyExistingInviteeProfile(profile) {
+        existingInviteeProfile = profile;
+        if (!profile) {
+          clearExistingProfileLocks();
+          return;
+        }
+        setProfileInputState(realNameInput, profile.real_name);
+        setProfileInputState(displayNameInput, profile.display_name);
+        setProfileInputState(mobileInput, profile.mobile);
+      }
+
+      async function refreshInviteeProfileFromEmail() {
+        const email = (emailInput.value || '').trim();
+        const previousProfileEmail = existingInviteeProfile && existingInviteeProfile.email;
+        if (previousProfileEmail && previousProfileEmail.toLowerCase() !== email.toLowerCase()) {
+          realNameInput.value = '';
+          displayNameInput.value = '';
+          mobileInput.value = '';
+        }
+        clearExistingProfileLocks();
+        if (!email) {
+          return;
+        }
+        try {
+          const profile = await lookupInviteeProfile(email);
+          if (profile) {
+            applyExistingInviteeProfile(profile);
+          }
+        } catch (err) {
+          errorEl.textContent = formatRpcError(err);
+        }
+      }
+
       async function onAcceptClicked() {
         if (responded || submitInFlight || !invite) return;
         errorEl.textContent = '';
         showInviteeForm();
+        await refreshInviteeProfileFromEmail();
       }
 
       async function onRejectClicked() {
@@ -561,9 +622,9 @@
           responded = true;
           invite = Object.assign({}, invite || {}, {
             invited_email: email,
-            invitee_real_name: realName,
-            invitee_display_name: displayName,
-            invitee_mobile: mobile,
+            invitee_real_name: (existingInviteeProfile && existingInviteeProfile.real_name) || realName,
+            invitee_display_name: (existingInviteeProfile && existingInviteeProfile.display_name) || displayName,
+            invitee_mobile: (existingInviteeProfile && existingInviteeProfile.mobile) || mobile,
             status: row.status,
             circle_ref: row.circle_ref || (invite && invite.circle_ref),
           });
@@ -580,6 +641,12 @@
       acceptBtn.addEventListener('click', onAcceptClicked);
       rejectBtn.addEventListener('click', onRejectClicked);
       emailSubmit.addEventListener('click', onEmailSubmit);
+      emailInput.addEventListener('blur', () => {
+        if (!emailInput.readOnly) void refreshInviteeProfileFromEmail();
+      });
+      emailInput.addEventListener('change', () => {
+        if (!emailInput.readOnly) void refreshInviteeProfileFromEmail();
+      });
       btnAndroid.addEventListener('click', () => {
         const { android } = buildStoreUrls();
         window.location.href = android;
