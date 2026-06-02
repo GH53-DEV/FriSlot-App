@@ -31,19 +31,34 @@ type CircleMemberLabelRow = {
   label: string | null;
 };
 
-function cleanLabel(value: string | null | undefined): string | null {
+function isUuidLike(value: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
+}
+
+function isEmailLike(value: string): boolean {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+}
+
+function cleanLabel(value: string | null | undefined, options?: { allowEmail?: boolean }): string | null {
   const trimmed = value?.trim();
   if (!trimmed) {
     return null;
   }
-  return trimmed.replace(/^(圈主|成員)\s*[:：]?\s*/, '').trim() || trimmed;
+  const cleaned = trimmed.replace(/^(圈主|成員)\s*[:：]?\s*/, '').trim() || trimmed;
+  if (isUuidLike(cleaned)) {
+    return null;
+  }
+  if (!options?.allowEmail && isEmailLike(cleaned)) {
+    return null;
+  }
+  return cleaned;
 }
 
 function profileLabel(row: UserLabelRow | undefined): string | null {
   if (!row) {
     return null;
   }
-  return cleanLabel(row.display_name) || cleanLabel(row.real_name) || cleanLabel(row.email);
+  return cleanLabel(row.display_name) || cleanLabel(row.real_name) || cleanLabel(row.email, { allowEmail: true });
 }
 
 function userLabel(row: UserLabelRow | undefined, fallback: string): string {
