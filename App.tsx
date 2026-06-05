@@ -50,6 +50,9 @@ import {
   readPendingInviteDeepLink,
   savePendingInviteDeepLink,
 } from './src/lib/pendingInviteStorage';
+import { listVisibleEventsForUser as listEventsForUnreadBadges } from './src/lib/events';
+import { listVisibleSlotsForUser as listSlotsForUnreadBadges } from './src/lib/slots';
+import { discussionKey, listDiscussionSummaries } from './src/lib/discussions';
 import { CircleDetailScreen } from './src/screens/CircleDetailScreen';
 import {
   ChooseDateScreen,
@@ -57,6 +60,7 @@ import {
   CreateCircleScreen,
   CreateEventScreen,
   CreateSlotScreen,
+  DiscussionScreen,
   EventDetailScreen,
   EventsScreen,
   SlotDetailScreen,
@@ -79,8 +83,10 @@ type AppView =
   | 'chooseDate'
   | 'createSlot'
   | 'slotDetail'
+  | 'slotDiscussion'
   | 'createEvent'
   | 'eventDetail'
+  | 'eventDiscussion'
   | 'circles'
   | 'slots'
   | 'events'
@@ -96,6 +102,15 @@ type CreateContext = {
 type ActiveDateRange = {
   startDate: string;
   endDate: string;
+};
+
+type DiscussionContext = {
+  scope: 'slot' | 'event';
+  targetId: string;
+  relatedTargetIds?: string[];
+  title: string;
+  subtitle?: string;
+  backLabel: string;
 };
 
 export default function App() {
@@ -128,10 +143,23 @@ export default function App() {
   const [accessibleCircles, setAccessibleCircles] = useState<CircleSummary[]>([]);
   const [accessibleCirclesError, setAccessibleCirclesError] = useState<string | null>(null);
   const [activeCircleId, setActiveCircleId] = useState<string | null>(null);
+  const [activeCircleUnreadCount, setActiveCircleUnreadCount] = useState(0);
   const [activeSlotId, setActiveSlotId] = useState<string | null>(null);
+  const [activeSlotUnreadCount, setActiveSlotUnreadCount] = useState(0);
+  const [activeSlotRelatedIds, setActiveSlotRelatedIds] = useState<string[]>([]);
   const [activeEventId, setActiveEventId] = useState<string | null>(null);
+  const [activeEventRelatedIds, setActiveEventRelatedIds] = useState<string[]>([]);
   const [activeSlotDateRange, setActiveSlotDateRange] = useState<ActiveDateRange | null>(null);
   const [activeEventDateRange, setActiveEventDateRange] = useState<ActiveDateRange | null>(null);
+  const [activeEventUnreadCount, setActiveEventUnreadCount] = useState(0);
+  const [activeDiscussion, setActiveDiscussion] = useState<DiscussionContext | null>(null);
+  const [circleUnreadCounts, setCircleUnreadCounts] = useState<Record<string, number>>({});
+  const [eventUnreadCounts, setEventUnreadCounts] = useState<Record<string, number>>({});
+  const [eventCircleRefs, setEventCircleRefs] = useState<Record<string, string>>({});
+  const [slotDiscussionUnreadCounts, setSlotDiscussionUnreadCounts] = useState<Record<string, number>>({});
+  const [locallyReadDiscussionKeys, setLocallyReadDiscussionKeys] = useState<Record<string, true>>({});
+  const [slotUnreadCount, setSlotUnreadCount] = useState(0);
+  const [unreadRefreshTick, setUnreadRefreshTick] = useState(0);
   const [createContext, setCreateContext] = useState<CreateContext | null>(null);
   const claimingInviteTokenRef = useRef<string | null>(null);
   const postInviteShareUrlRef = useRef<string | null>(null);
@@ -546,13 +574,21 @@ export default function App() {
     setHasUserProfile(null);
     setAuthRouteError(null);
     setActiveCircleId(null);
+    setActiveCircleUnreadCount(0);
     setActiveSlotId(null);
+    setActiveSlotUnreadCount(0);
+    setActiveSlotRelatedIds([]);
     setActiveEventId(null);
+    setActiveEventRelatedIds([]);
+    setLocallyReadDiscussionKeys({});
     setActiveSlotDateRange(null);
     setActiveEventDateRange(null);
+    setActiveEventUnreadCount(0);
+    setActiveDiscussion(null);
     setCreateContext(null);
     setAccessibleCircles([]);
     setAccessibleCirclesError(null);
+    setEventCircleRefs({});
     setAppView('home');
     setInviteAfterCircle(null);
   };
@@ -803,8 +839,12 @@ export default function App() {
     }
   };
 
-  const openCircleDetail = (circleId: string) => {
+  const openCircleDetail = (circleId: string, activityUnreadCount?: number) => {
+    setActiveDiscussion(null);
     setActiveCircleId(circleId);
+    setActiveCircleUnreadCount((current) => (
+      activityUnreadCount ?? (activeCircleId === circleId ? current : circleUnreadCounts[circleId] ?? 0)
+    ));
     setAppView('circleDetail');
   };
 
@@ -847,6 +887,189 @@ export default function App() {
   const inviteFriendFromCircle = (circleId: string, circleName: string) => {
     setInviteAfterCircle({ circleId, circleName });
   };
+
+  useEffect(() => {
+    if (!session?.user.id) {
+      return;
+    }
+
+    const channel = supabase
+      .channel(`app-discussion-unread:${session.user.id}`)
+      .on(
+        'postgres_changes',
+        {
+          event: 'INSERT',
+          schema: 'public',
+          table: 'discussion_messages',
+        },
+        (payload) => {
+          const row = payload.new as { scope?: 'slot' | 'event'; target_id?: string; sender_id?: string };
+          if (row.scope && row.target_id && row.sender_id !== session.user.id) {
+            const key = discussionKey(row.scope, row.target_id);
+            setLocallyReadDiscussionKeys((current) => {
+              if (!current[key]) {
+                return current;
+              }
+              const next = { ...current };
+              delete next[key];
+              return next;
+            });
+          }
+          setUnreadRefreshTick((tick) => tick + 1);
+        },
+      )
+      .subscribe();
+
+    return () => {
+      void supabase.removeChannel(channel);
+    };
+  }, [session?.user.id]);
+
+  useEffect(() => {
+    const userId = session?.user.id;
+    if (!userId || accessibleCircles.length === 0) {
+      setCircleUnreadCounts({});
+      setEventUnreadCounts({});
+      setEventCircleRefs({});
+      setSlotDiscussionUnreadCounts({});
+      setSlotUnreadCount(0);
+      return;
+    }
+
+    let cancelled = false;
+    const loadCircleUnreadCounts = async () => {
+      try {
+        const events = await listEventsForUnreadBadges(userId);
+        const eventSummaries = await listDiscussionSummaries(
+          userId,
+          events.map((event) => ({ scope: 'event', targetId: event.id })),
+        );
+        const counts: Record<string, number> = {};
+        const nextEventUnreadCounts: Record<string, number> = {};
+        const nextEventCircleRefs: Record<string, string> = {};
+        for (const event of events) {
+          nextEventCircleRefs[event.id] = event.circleRef;
+          const key = discussionKey('event', event.id);
+          const unreadCount = locallyReadDiscussionKeys[key] ? 0 : eventSummaries.get(key)?.unreadCount ?? 0;
+          if (unreadCount > 0) {
+            nextEventUnreadCounts[event.id] = unreadCount;
+            counts[event.circleRef] = (counts[event.circleRef] ?? 0) + unreadCount;
+          }
+        }
+        if (!cancelled) {
+          setCircleUnreadCounts(counts);
+          setEventUnreadCounts(nextEventUnreadCounts);
+          setEventCircleRefs(nextEventCircleRefs);
+        }
+      } catch (err) {
+        if (__DEV__) {
+          console.warn('[event-unread]', err);
+        }
+      }
+
+      try {
+        const slots = await listSlotsForUnreadBadges(userId);
+        const slotSummaries = await listDiscussionSummaries(
+          userId,
+          slots.map((slot) => ({ scope: 'slot', targetId: slot.id })),
+        );
+        let nextSlotUnreadCount = 0;
+        const nextSlotDiscussionUnreadCounts: Record<string, number> = {};
+        for (const slot of slots) {
+          const key = discussionKey('slot', slot.id);
+          const unreadCount = locallyReadDiscussionKeys[key] ? 0 : slotSummaries.get(key)?.unreadCount ?? 0;
+          if (unreadCount > 0) {
+            nextSlotDiscussionUnreadCounts[slot.id] = unreadCount;
+          }
+          nextSlotUnreadCount += unreadCount;
+        }
+        if (!cancelled) {
+          setSlotDiscussionUnreadCounts(nextSlotDiscussionUnreadCounts);
+          setSlotUnreadCount(nextSlotUnreadCount);
+        }
+      } catch (err) {
+        if (__DEV__) {
+          console.warn('[slot-unread]', err);
+        }
+        if (!cancelled) {
+          setSlotDiscussionUnreadCounts({});
+          setSlotUnreadCount(0);
+        }
+      }
+    };
+
+    void loadCircleUnreadCounts();
+    return () => {
+      cancelled = true;
+    };
+  }, [accessibleCircles.length, session?.user.id, unreadRefreshTick, locallyReadDiscussionKeys]);
+
+  const clearDiscussionUnread = (scope: DiscussionContext['scope'], targetId: string, relatedTargetIds: string[] = []) => {
+    const targetIds = Array.from(new Set([targetId, ...relatedTargetIds]));
+    setLocallyReadDiscussionKeys((current) => {
+      const next = { ...current };
+      for (const id of targetIds) {
+        next[discussionKey(scope, id)] = true;
+      }
+      return next;
+    });
+    if (scope === 'slot') {
+      const clearedCount = targetIds.reduce((total, id) => total + (slotDiscussionUnreadCounts[id] ?? 0), 0);
+      setActiveSlotUnreadCount(0);
+      setSlotDiscussionUnreadCounts((current) => {
+        const next = { ...current };
+        for (const id of targetIds) {
+          delete next[id];
+        }
+        return next;
+      });
+      setSlotUnreadCount((current) => Math.max(0, current - clearedCount));
+      return;
+    }
+
+    const clearedCount = targetIds.reduce((total, id) => total + (eventUnreadCounts[id] ?? 0), 0);
+    setActiveEventUnreadCount(0);
+    setEventUnreadCounts((current) => {
+      const next = { ...current };
+      for (const id of targetIds) {
+        delete next[id];
+      }
+      return next;
+    });
+    if (activeCircleId) {
+      setActiveCircleUnreadCount((current) => Math.max(0, current - clearedCount));
+      setCircleUnreadCounts((current) => {
+        const nextCount = Math.max(0, (current[activeCircleId] ?? 0) - clearedCount);
+        const next = { ...current };
+        if (nextCount > 0) {
+          next[activeCircleId] = nextCount;
+        } else {
+          delete next[activeCircleId];
+        }
+        return next;
+      });
+    } else {
+      setActiveCircleUnreadCount(0);
+    }
+  };
+
+  const displayedEventUnreadCounts = Object.fromEntries(
+    Object.entries(eventUnreadCounts).filter(([eventId]) => !locallyReadDiscussionKeys[discussionKey('event', eventId)]),
+  );
+  const displayedCircleUnreadCounts = Object.entries(displayedEventUnreadCounts).reduce<Record<string, number>>(
+    (acc, [eventId, unreadCount]) => {
+      const circleId = eventCircleRefs[eventId];
+      if (circleId) {
+        acc[circleId] = (acc[circleId] ?? 0) + unreadCount;
+      }
+      return acc;
+    },
+    {},
+  );
+  const displayedSlotUnreadCounts = Object.fromEntries(
+    Object.entries(slotDiscussionUnreadCounts).filter(([slotId]) => !locallyReadDiscussionKeys[discussionKey('slot', slotId)]),
+  );
+  const displayedSlotUnreadCount = Object.values(displayedSlotUnreadCounts).reduce((total, count) => total + count, 0);
 
   const userLabel = session?.user.email ?? session?.user.id ?? '';
 
@@ -937,21 +1160,33 @@ export default function App() {
       <CircleDetailScreen
         circleId={activeCircleId}
         userId={session.user.id}
+        unreadRefreshKey={unreadRefreshTick}
+        activityUnreadCount={displayedCircleUnreadCounts[activeCircleId] ?? 0}
+        eventUnreadCounts={displayedEventUnreadCounts}
+        slotUnreadCounts={displayedSlotUnreadCounts}
+        locallyReadDiscussionKeys={locallyReadDiscussionKeys}
         onBack={() => {
           setActiveCircleId(null);
+          setActiveCircleUnreadCount(0);
           setAppView('home');
         }}
         onCreateSlot={(circleId) => startCreateFlow('slot', [circleId], true)}
         onCreateEvent={(circleId) => startCreateFlow('event', [circleId], true)}
         onInviteFriend={inviteFriendFromCircle}
-        onOpenSlot={(slotId) => {
+        onOpenSlot={(slotId, unreadCount) => {
+          setActiveDiscussion(null);
           setActiveSlotId(slotId);
+          setActiveSlotRelatedIds([slotId]);
+          setActiveSlotUnreadCount(unreadCount ?? displayedSlotUnreadCounts[slotId] ?? 0);
           setActiveSlotDateRange(null);
           setAppView('slotDetail');
         }}
-        onOpenEvent={(eventId) => {
+        onOpenEvent={(eventId, unreadCount, relatedEventIds) => {
+          setActiveDiscussion(null);
           setActiveEventId(eventId);
+          setActiveEventRelatedIds(relatedEventIds?.length ? relatedEventIds : [eventId]);
           setActiveEventDateRange(null);
+          setActiveEventUnreadCount(unreadCount ?? displayedEventUnreadCounts[eventId] ?? 0);
           setAppView('eventDetail');
         }}
       />
@@ -976,7 +1211,9 @@ export default function App() {
         defaultCircleIds={createContext.circleIds}
         lockCircleSelection={createContext.lockCircleSelection}
         onCreated={(slotId) => {
+          setActiveDiscussion(null);
           setActiveSlotId(slotId);
+          setActiveSlotRelatedIds([slotId]);
           setActiveSlotDateRange(
             createContext.dates.length > 1
               ? {
@@ -998,6 +1235,20 @@ export default function App() {
         circles={accessibleCircles}
         contextCircleId={activeCircleId}
         displayDateRange={activeSlotDateRange}
+        unreadRefreshKey={unreadRefreshTick}
+        unreadCountOverride={Math.max(displayedSlotUnreadCounts[activeSlotId] ?? 0, activeSlotUnreadCount)}
+        suppressUnread={Boolean(locallyReadDiscussionKeys[discussionKey('slot', activeSlotId)])}
+        onOpenDiscussion={(title, subtitle) => {
+          setActiveDiscussion({
+            scope: 'slot',
+            targetId: activeSlotId,
+            relatedTargetIds: activeSlotRelatedIds.includes(activeSlotId) ? activeSlotRelatedIds : [activeSlotId],
+            title,
+            subtitle,
+            backLabel: '返回悠閒時光',
+          });
+          setAppView('slotDiscussion');
+        }}
         onBack={() => {
           if (activeCircleId) {
             openCircleDetail(activeCircleId);
@@ -1006,6 +1257,28 @@ export default function App() {
           } else {
             setAppView('slots');
           }
+        }}
+      />
+    );
+  } else if (appView === 'slotDiscussion' && activeDiscussion?.scope === 'slot') {
+    body = (
+      <DiscussionScreen
+        scope={activeDiscussion.scope}
+        targetId={activeDiscussion.targetId}
+        userId={session.user.id}
+        title={activeDiscussion.title}
+        subtitle={activeDiscussion.subtitle}
+        targetBackLabel={activeDiscussion.backLabel}
+        relatedTargetIds={activeDiscussion.relatedTargetIds}
+        onRead={() => clearDiscussionUnread(activeDiscussion.scope, activeDiscussion.targetId, activeDiscussion.relatedTargetIds)}
+        onHome={() => {
+          clearDiscussionUnread(activeDiscussion.scope, activeDiscussion.targetId, activeDiscussion.relatedTargetIds);
+          setActiveDiscussion(null);
+          setAppView('home');
+        }}
+        onBackToTarget={() => {
+          clearDiscussionUnread(activeDiscussion.scope, activeDiscussion.targetId, activeDiscussion.relatedTargetIds);
+          setAppView('slotDetail');
         }}
       />
     );
@@ -1018,7 +1291,10 @@ export default function App() {
         defaultCircleIds={createContext.circleIds}
         lockCircleSelection={createContext.lockCircleSelection}
         onCreated={(eventId) => {
+          setActiveDiscussion(null);
           setActiveEventId(eventId);
+          setActiveEventRelatedIds([eventId]);
+          setActiveEventUnreadCount(0);
           setActiveEventDateRange(
             createContext.dates.length > 1
               ? {
@@ -1039,6 +1315,20 @@ export default function App() {
         userId={session.user.id}
         circles={accessibleCircles}
         displayDateRange={activeEventDateRange}
+        unreadRefreshKey={unreadRefreshTick}
+        unreadCountOverride={Math.max(displayedEventUnreadCounts[activeEventId] ?? 0, activeEventUnreadCount)}
+        suppressUnread={Boolean(locallyReadDiscussionKeys[discussionKey('event', activeEventId)])}
+        onOpenDiscussion={(title, subtitle) => {
+          setActiveDiscussion({
+            scope: 'event',
+            targetId: activeEventId,
+            relatedTargetIds: activeEventRelatedIds.includes(activeEventId) ? activeEventRelatedIds : [activeEventId],
+            title,
+            subtitle,
+            backLabel: '返回該活動',
+          });
+          setAppView('eventDiscussion');
+        }}
         onBack={() => {
           if (activeCircleId) {
             openCircleDetail(activeCircleId);
@@ -1050,10 +1340,33 @@ export default function App() {
         }}
       />
     );
+  } else if (appView === 'eventDiscussion' && activeDiscussion?.scope === 'event') {
+    body = (
+      <DiscussionScreen
+        scope={activeDiscussion.scope}
+        targetId={activeDiscussion.targetId}
+        userId={session.user.id}
+        title={activeDiscussion.title}
+        subtitle={activeDiscussion.subtitle}
+        targetBackLabel={activeDiscussion.backLabel}
+        relatedTargetIds={activeDiscussion.relatedTargetIds}
+        onRead={() => clearDiscussionUnread(activeDiscussion.scope, activeDiscussion.targetId, activeDiscussion.relatedTargetIds)}
+        onHome={() => {
+          clearDiscussionUnread(activeDiscussion.scope, activeDiscussion.targetId, activeDiscussion.relatedTargetIds);
+          setActiveDiscussion(null);
+          setAppView('home');
+        }}
+        onBackToTarget={() => {
+          clearDiscussionUnread(activeDiscussion.scope, activeDiscussion.targetId, activeDiscussion.relatedTargetIds);
+          setAppView('eventDetail');
+        }}
+      />
+    );
   } else if (appView === 'circles') {
     body = (
       <CirclesScreen
         circles={accessibleCircles}
+        circleUnreadCounts={displayedCircleUnreadCounts}
         onOpenCircle={openCircleDetail}
         onBack={() => setAppView('home')}
       />
@@ -1063,9 +1376,12 @@ export default function App() {
       <SlotsScreen
         userId={session.user.id}
         circles={accessibleCircles}
-        onOpenSlot={(slotId, dateRange) => {
+        onOpenSlot={(slotId, dateRange, unreadCount, relatedSlotIds) => {
           setCreateContext(null);
+          setActiveDiscussion(null);
           setActiveSlotId(slotId);
+          setActiveSlotRelatedIds(relatedSlotIds?.length ? relatedSlotIds : [slotId]);
+          setActiveSlotUnreadCount(unreadCount ?? displayedSlotUnreadCounts[slotId] ?? 0);
           setActiveSlotDateRange(dateRange ?? null);
           setAppView('slotDetail');
         }}
@@ -1077,9 +1393,12 @@ export default function App() {
       <EventsScreen
         userId={session.user.id}
         circles={accessibleCircles}
-        onOpenEvent={(eventId, dateRange) => {
+        onOpenEvent={(eventId, dateRange, unreadCount, relatedEventIds) => {
           setCreateContext(null);
+          setActiveDiscussion(null);
           setActiveEventId(eventId);
+          setActiveEventRelatedIds(relatedEventIds?.length ? relatedEventIds : [eventId]);
+          setActiveEventUnreadCount(unreadCount ?? displayedEventUnreadCounts[eventId] ?? 0);
           setActiveEventDateRange(dateRange ?? null);
           setAppView('eventDetail');
         }}
@@ -1099,6 +1418,8 @@ export default function App() {
       <HomeScreen
         userLabel={userLabel}
         circles={accessibleCircles}
+        circleUnreadCounts={displayedCircleUnreadCounts}
+        slotUnreadCount={displayedSlotUnreadCount}
         circlesLoading={routeLoading}
         circlesError={accessibleCirclesError}
         onOpenCircle={openCircleDetail}

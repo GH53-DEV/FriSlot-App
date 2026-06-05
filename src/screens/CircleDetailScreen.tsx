@@ -12,21 +12,32 @@ import { formatErrorMessage } from '../lib/formatErrorMessage';
 import { getCircleForUser, listCircleMembers, type CircleDetail, type CircleMemberSummary } from '../lib/circleAccess';
 import { listSlotsForCircle, type SlotSummary } from '../lib/slots';
 import { listEventsForCircle, type EventSummary } from '../lib/events';
+import {
+  discussionKey,
+  listDiscussionSummaries,
+  type DiscussionSummary,
+} from '../lib/discussions';
 
 export type CircleDetailScreenProps = {
   circleId: string;
   userId: string;
+  unreadRefreshKey?: number;
+  activityUnreadCount?: number;
+  eventUnreadCounts?: Record<string, number>;
+  slotUnreadCounts?: Record<string, number>;
+  locallyReadDiscussionKeys?: Record<string, true>;
   onBack: () => void;
   onCreateSlot: (circleId: string) => void;
   onCreateEvent: (circleId: string) => void;
   onInviteFriend: (circleId: string, circleName: string) => void;
-  onOpenSlot: (slotId: string) => void;
-  onOpenEvent: (eventId: string) => void;
+  onOpenSlot: (slotId: string, unreadCount?: number) => void;
+  onOpenEvent: (eventId: string, unreadCount?: number, relatedEventIds?: string[]) => void;
 };
 
 type EventTimelineItem = {
   key: string;
   firstEventId: string;
+  eventIds: string[];
   title: string;
   startDate: string;
   endDate: string;
@@ -80,8 +91,56 @@ function isEventDeadlinePassed(event: EventSummary): boolean {
   return Boolean(event.eventDeadline && event.eventDeadline < todayIso());
 }
 
+function endHour(timeBlock: string): number {
+  const normalized = timeBlock.trim();
+  const timeMatches = Array.from(normalized.matchAll(/(\d{1,2})(?::(\d{2}))?/g));
+  if (timeMatches.length > 0) {
+    const last = timeMatches[timeMatches.length - 1];
+    const hour = Number(last[1]);
+    const minute = Number(last[2] ?? '0');
+    if (Number.isFinite(hour) && hour >= 0 && hour <= 23 && Number.isFinite(minute)) {
+      const isAfternoon = /下午|晚上/.test(normalized) && hour < 12;
+      return (isAfternoon ? hour + 12 : hour) + minute / 60;
+    }
+  }
+  if (normalized.includes('全天') || normalized.includes('晚上')) {
+    return 24;
+  }
+  if (normalized.includes('下午')) {
+    return 18;
+  }
+  if (normalized.includes('上午')) {
+    return 12;
+  }
+  return 24;
+}
+
+function isEventExpired(event: Pick<EventSummary, 'eventDate' | 'timeBlock'>): boolean {
+  const today = todayIso();
+  if (event.eventDate < today) {
+    return true;
+  }
+  if (event.eventDate > today) {
+    return false;
+  }
+  const now = new Date();
+  return now.getHours() + now.getMinutes() / 60 >= endHour(event.timeBlock);
+}
+
 function isEventLatestVisible(event: EventSummary): boolean {
-  return event.status !== 'cancelled' && (isEventFull(event) || !isEventDeadlinePassed(event));
+  return event.status !== 'cancelled' && !isEventExpired(event) && (isEventFull(event) || !isEventDeadlinePassed(event));
+}
+
+function isSlotExpired(slot: Pick<SlotSummary, 'slotDate' | 'timeBlock'>): boolean {
+  const today = todayIso();
+  if (slot.slotDate < today) {
+    return true;
+  }
+  if (slot.slotDate > today) {
+    return false;
+  }
+  const now = new Date();
+  return now.getHours() + now.getMinutes() / 60 >= endHour(slot.timeBlock);
 }
 
 function buildEventTimeline(events: EventSummary[]): EventTimelineItem[] {
@@ -104,12 +163,14 @@ function buildEventTimeline(events: EventSummary[]): EventTimelineItem[] {
     for (const event of sortedEvents) {
       if (current && isNextDate(current.endDate, event.eventDate)) {
         current.endDate = event.eventDate;
+        current.eventIds.push(event.id);
         continue;
       }
 
       current = {
         key: event.id,
         firstEventId: event.id,
+        eventIds: [event.id],
         title: event.title,
         startDate: event.eventDate,
         endDate: event.eventDate,
@@ -131,6 +192,11 @@ function buildEventTimeline(events: EventSummary[]): EventTimelineItem[] {
 export function CircleDetailScreen({
   circleId,
   userId,
+  unreadRefreshKey = 0,
+  activityUnreadCount = 0,
+  eventUnreadCounts = {},
+  slotUnreadCounts = {},
+  locallyReadDiscussionKeys = {},
   onBack,
   onCreateSlot,
   onCreateEvent,
@@ -143,8 +209,13 @@ export function CircleDetailScreen({
   const [members, setMembers] = useState<CircleMemberSummary[]>([]);
   const [slots, setSlots] = useState<SlotSummary[]>([]);
   const [events, setEvents] = useState<EventSummary[]>([]);
+  const [discussionSummaries, setDiscussionSummaries] = useState<Map<string, DiscussionSummary>>(new Map());
   const [error, setError] = useState<string | null>(null);
   const eventTimeline = useMemo(() => buildEventTimeline(events.filter(isEventLatestVisible)), [events]);
+  const visibleSlots = useMemo(
+    () => slots.filter((slot) => slot.status === 'open' && !isSlotExpired(slot)),
+    [slots],
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -167,6 +238,10 @@ export function CircleDetailScreen({
           listSlotsForCircle(circleId),
           listEventsForCircle(circleId),
         ]);
+        const summaries = await listDiscussionSummaries(userId, [
+          ...slotRows.map((slot) => ({ scope: 'slot' as const, targetId: slot.id })),
+          ...eventRows.map((event) => ({ scope: 'event' as const, targetId: event.id })),
+        ]);
         if (cancelled) {
           return;
         }
@@ -174,6 +249,7 @@ export function CircleDetailScreen({
         setMembers(memberRows);
         setSlots(slotRows);
         setEvents(eventRows);
+        setDiscussionSummaries(summaries);
       } catch (err) {
         if (!cancelled) {
           setError(formatErrorMessage(err));
@@ -190,7 +266,7 @@ export function CircleDetailScreen({
     return () => {
       cancelled = true;
     };
-  }, [circleId, userId]);
+  }, [circleId, userId, unreadRefreshKey]);
 
   if (loading) {
     return (
@@ -224,14 +300,33 @@ export function CircleDetailScreen({
         </View>
         <View style={styles.placeholderBox}>
           <Text style={styles.placeholderTitle}>活動時間線</Text>
+          {activityUnreadCount > 0 ? (
+            <Text style={styles.unreadLinkLine}>活動新對話 {activityUnreadCount}</Text>
+          ) : null}
           {eventTimeline.length === 0 ? (
             <Text style={styles.placeholderMuted}>尚無活動</Text>
           ) : (
-            eventTimeline.map((event) => (
-              <TouchableOpacity key={event.key} onPress={() => onOpenEvent(event.firstEventId)}>
-                <Text style={styles.linkLine}>{event.title} · {formatDateRange(event.startDate, event.endDate)} · {event.timeBlock}</Text>
-              </TouchableOpacity>
-            ))
+            eventTimeline.map((event) => {
+              const unreadCount = event.eventIds.reduce(
+                (total, eventId) => {
+                  const key = discussionKey('event', eventId);
+                  return total + (locallyReadDiscussionKeys[key] ? 0 : eventUnreadCounts[eventId] ?? discussionSummaries.get(key)?.unreadCount ?? 0);
+                },
+                0,
+              );
+              const eventIdToOpen = event.eventIds.find((eventId) => (
+                !locallyReadDiscussionKeys[discussionKey('event', eventId)]
+                && (eventUnreadCounts[eventId] ?? discussionSummaries.get(discussionKey('event', eventId))?.unreadCount ?? 0) > 0
+              )) ?? event.eventIds.find((eventId) => Boolean(discussionSummaries.get(discussionKey('event', eventId))?.lastMessageAt)) ?? event.firstEventId;
+              return (
+                <TouchableOpacity key={event.key} onPress={() => onOpenEvent(eventIdToOpen, unreadCount, event.eventIds)}>
+                  <Text style={unreadCount ? styles.unreadLinkLine : styles.linkLine}>
+                    {event.title} · {formatDateRange(event.startDate, event.endDate)} · {event.timeBlock}
+                    {unreadCount ? ` · 新對話 ${unreadCount}` : ''}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })
           )}
         </View>
         <View style={styles.placeholderBox}>
@@ -248,16 +343,22 @@ export function CircleDetailScreen({
         </View>
         <View style={styles.placeholderBox}>
           <Text style={styles.placeholderTitle}>悠閒時光</Text>
-          {slots.length === 0 ? (
+          {visibleSlots.length === 0 ? (
             <Text style={styles.placeholderMuted}>尚無悠閒時光</Text>
           ) : (
-            slots.map((slot) => (
-              <TouchableOpacity key={slot.id} onPress={() => onOpenSlot(slot.id)}>
-                <Text style={styles.linkLine}>
-                  {slot.createdByLabel} · {slot.slotDate} · {slot.timeBlock}
-                </Text>
-              </TouchableOpacity>
-            ))
+            visibleSlots.map((slot) => {
+              const key = discussionKey('slot', slot.id);
+              const summary = discussionSummaries.get(key);
+              const unreadCount = locallyReadDiscussionKeys[key] ? 0 : slotUnreadCounts[slot.id] ?? summary?.unreadCount ?? 0;
+              return (
+                <TouchableOpacity key={slot.id} onPress={() => onOpenSlot(slot.id, unreadCount)}>
+                  <Text style={unreadCount ? styles.unreadLinkLine : styles.linkLine}>
+                    {slot.createdByLabel} · {slot.slotDate} · {slot.timeBlock}
+                    {unreadCount ? ` · 新對話 ${unreadCount}` : ''}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })
           )}
         </View>
 
@@ -348,6 +449,12 @@ const styles = StyleSheet.create({
     color: '#2563eb',
     fontSize: 13,
     fontWeight: '600',
+    marginTop: 6,
+  },
+  unreadLinkLine: {
+    color: '#dc2626',
+    fontSize: 13,
+    fontWeight: '800',
     marginTop: 6,
   },
   actionRow: {

@@ -66,6 +66,11 @@ type UserLabelRow = {
   display_name: string | null;
 };
 
+type UserDisplayLabelRow = {
+  uid: string;
+  label: string | null;
+};
+
 function toSlotSummary(row: SlotRow, visibleCircleIds: string[] = [], createdByLabel = row.created_by): SlotSummary {
   return {
     id: row.id,
@@ -119,12 +124,27 @@ async function fetchUserLabels(userIds: string[]): Promise<Map<string, string>> 
   if (uniqueIds.length === 0) {
     return labels;
   }
+
+  const { data: rpcRows, error: rpcError } = await supabase.rpc('list_user_display_labels', {
+    p_user_ids: uniqueIds,
+  });
+  if (!rpcError) {
+    for (const row of (rpcRows ?? []) as UserDisplayLabelRow[]) {
+      if (row.label?.trim()) {
+        labels.set(row.uid, row.label.trim());
+      }
+    }
+    if (labels.size === uniqueIds.length) {
+      return labels;
+    }
+  }
+
   const { data, error } = await supabase
     .from(T.users)
     .select('uid, email, real_name, display_name')
     .in('uid', uniqueIds);
   if (error) {
-    throw error;
+    return labels;
   }
   for (const row of (data ?? []) as UserLabelRow[]) {
     labels.set(row.uid, userLabel(row, row.uid));
@@ -266,19 +286,7 @@ export async function getSlotDetail(slotId: string): Promise<SlotDetail | null> 
 
   const bookings = (bookingsData ?? []) as SlotBookingRow[];
   const requesterIds = unique(bookings.map((booking) => booking.requested_by));
-  const usersById = new Map<string, UserLabelRow>();
-  if (requesterIds.length > 0) {
-    const { data: users, error: usersErr } = await supabase
-      .from(T.users)
-      .select('uid, email, real_name, display_name')
-      .in('uid', requesterIds);
-    if (usersErr) {
-      throw usersErr;
-    }
-    for (const row of (users ?? []) as UserLabelRow[]) {
-      usersById.set(row.uid, row);
-    }
-  }
+  const requesterLabels = await fetchUserLabels(requesterIds);
 
   return {
     ...toSlotSummary(slotRow, visibilityBySlot.get(slotId) ?? [], creatorLabels.get(slotRow.created_by)),
@@ -287,7 +295,7 @@ export async function getSlotDetail(slotId: string): Promise<SlotDetail | null> 
       slotId: booking.slot_id,
       circleRef: booking.circle_ref,
       requestedBy: booking.requested_by,
-      requesterLabel: userLabel(usersById.get(booking.requested_by), booking.requested_by),
+      requesterLabel: requesterLabels.get(booking.requested_by) ?? booking.requested_by,
       status: booking.status,
       message: booking.message,
       createdAt: booking.created_at,

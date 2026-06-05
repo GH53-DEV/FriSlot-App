@@ -4,9 +4,11 @@ import type { CircleSummary } from '../lib/circleAccess';
 type HomeScreenProps = {
   userLabel: string;
   circles: CircleSummary[];
+  circleUnreadCounts: Record<string, number>;
+  slotUnreadCount: number;
   circlesLoading: boolean;
   circlesError: string | null;
-  onOpenCircle: (circleId: string) => void;
+  onOpenCircle: (circleId: string, activityUnreadCount?: number) => void;
   onCreateSlot: () => void;
   onCreateEvent: () => void;
   onCreateCircle: () => void;
@@ -19,6 +21,8 @@ type HomeScreenProps = {
 export function HomeScreen({
   userLabel,
   circles,
+  circleUnreadCounts,
+  slotUnreadCount,
   circlesLoading,
   circlesError,
   onOpenCircle,
@@ -54,6 +58,11 @@ export function HomeScreen({
           <TouchableOpacity onPress={onOpenSlots}>
             <Text style={styles.linkLine}>查看悠閒時光看板</Text>
           </TouchableOpacity>
+          {slotUnreadCount > 0 ? (
+            <TouchableOpacity onPress={onOpenSlots}>
+              <Text style={styles.privateUnreadText}>悠閒時光私聊新對話 {slotUnreadCount}</Text>
+            </TouchableOpacity>
+          ) : null}
         </View>
 
         <View style={styles.circleSection}>
@@ -65,18 +74,20 @@ export function HomeScreen({
           ) : circles.length === 0 ? (
             <Text style={styles.listItem}>尚無可進入的密友圈</Text>
           ) : (
-            circles.map((circle) => (
+            circles.map((circle) => {
+              const unreadCount = circleUnreadCounts[circle.id] ?? 0;
+              return (
               <TouchableOpacity
                 key={circle.id}
-                style={styles.circleRow}
-                onPress={() => onOpenCircle(circle.id)}
+                style={[styles.circleRow, unreadCount ? styles.circleRowUnread : null]}
+                onPress={() => onOpenCircle(circle.id, unreadCount)}
               >
                 <Text style={styles.circleName}>
                   {circle.circleName}（{circle.memberCount}）
                 </Text>
+                {unreadCount ? <Text style={styles.unreadText}>活動新對話 {unreadCount}</Text> : null}
                 <Text style={styles.circleRole}>
-                  {circle.role === 'owner' ? '圈主' : '成員'}
-                  {circle.ownerLabel ? `：${circle.ownerLabel}` : ''}
+                  圈主{circle.ownerLabel ? `：${circle.ownerLabel}` : ''}
                 </Text>
                 {circle.memberLabels.length > 0 ? (
                   <Text style={styles.circleMembers} numberOfLines={2}>
@@ -84,7 +95,8 @@ export function HomeScreen({
                   </Text>
                 ) : null}
               </TouchableOpacity>
-            ))
+              );
+            })
           )}
         </View>
 
@@ -217,6 +229,32 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 10,
     marginBottom: 8,
+  },
+  circleRowUnread: {
+    borderColor: '#f97316',
+    backgroundColor: '#fff7ed',
+  },
+  unreadText: {
+    alignSelf: 'flex-start',
+    backgroundColor: '#f97316',
+    borderRadius: 999,
+    color: '#ffffff',
+    fontSize: 12,
+    fontWeight: '800',
+    marginTop: 6,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+  },
+  privateUnreadText: {
+    alignSelf: 'flex-start',
+    backgroundColor: '#dc2626',
+    borderRadius: 999,
+    color: '#ffffff',
+    fontSize: 12,
+    fontWeight: '800',
+    marginTop: 8,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
   },
   circleName: {
     fontSize: 15,

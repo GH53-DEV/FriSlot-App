@@ -66,6 +66,11 @@ type UserLabelRow = {
   display_name: string | null;
 };
 
+type UserDisplayLabelRow = {
+  uid: string;
+  label: string | null;
+};
+
 function toEventSummary(row: EventRow, participantCount = 0, createdByLabel = row.created_by): EventSummary {
   return {
     id: row.id,
@@ -103,12 +108,27 @@ async function fetchUserLabels(userIds: string[]): Promise<Map<string, string>> 
   if (uniqueIds.length === 0) {
     return labels;
   }
+
+  const { data: rpcRows, error: rpcError } = await supabase.rpc('list_user_display_labels', {
+    p_user_ids: uniqueIds,
+  });
+  if (!rpcError) {
+    for (const row of (rpcRows ?? []) as UserDisplayLabelRow[]) {
+      if (row.label?.trim()) {
+        labels.set(row.uid, row.label.trim());
+      }
+    }
+    if (labels.size === uniqueIds.length) {
+      return labels;
+    }
+  }
+
   const { data, error } = await supabase
     .from(T.users)
     .select('uid, email, real_name, display_name')
     .in('uid', uniqueIds);
   if (error) {
-    throw error;
+    return labels;
   }
   for (const row of (data ?? []) as UserLabelRow[]) {
     labels.set(row.uid, userLabel(row, row.uid));
@@ -239,27 +259,15 @@ export async function getEventDetail(eventId: string): Promise<EventDetail | nul
   const participants = (participantsData ?? []) as EventParticipantRow[];
   const eventRow = event as EventRow;
   const userIds = unique([...participants.map((participant) => participant.user_id), eventRow.created_by]);
-  const usersById = new Map<string, UserLabelRow>();
-  if (userIds.length > 0) {
-    const { data: users, error: usersErr } = await supabase
-      .from(T.users)
-      .select('uid, email, real_name, display_name')
-      .in('uid', userIds);
-    if (usersErr) {
-      throw usersErr;
-    }
-    for (const row of (users ?? []) as UserLabelRow[]) {
-      usersById.set(row.uid, row);
-    }
-  }
+  const userLabels = await fetchUserLabels(userIds);
 
   const activeParticipantCount = participants.filter((participant) => participant.status === 'joined').length;
   return {
-    ...toEventSummary(eventRow, activeParticipantCount, userLabel(usersById.get(eventRow.created_by), eventRow.created_by)),
+    ...toEventSummary(eventRow, activeParticipantCount, userLabels.get(eventRow.created_by) ?? eventRow.created_by),
     participants: participants.map((participant) => ({
       eventId: participant.event_id,
       userId: participant.user_id,
-      userLabel: userLabel(usersById.get(participant.user_id), participant.user_id),
+      userLabel: userLabels.get(participant.user_id) ?? participant.user_id,
       status: participant.status,
       createdAt: participant.created_at,
     })),

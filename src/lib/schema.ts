@@ -12,4 +12,7 @@ export const T = {
   slotBookings: 'slot_bookings',
   events: 'events',
   eventParticipants: 'event_participants',
+  discussionMessages: 'discussion_messages',
+  discussionParticipants: 'discussion_participants',
+  discussionMessageReads: 'discussion_message_reads',
 } as const;

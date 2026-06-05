@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -30,16 +30,29 @@ import {
   type EventDetail,
   type EventSummary,
 } from '../lib/events';
+import {
+  createDiscussionMessage,
+  discussionKey,
+  listDiscussionSummaries,
+  listDiscussionMessages,
+  markDiscussionRead,
+  subscribeToDiscussionMessages,
+  type DiscussionMessage,
+  type DiscussionScope,
+  type DiscussionSummary,
+} from '../lib/discussions';
 
 type CreateMode = 'slot' | 'event';
 type GroupedSlot = SlotSummary & {
   firstSlotId: string;
+  slotIds: string[];
   startDate: string;
   endDate: string;
   groupKey: string;
 };
 type GroupedEvent = EventSummary & {
   firstEventId: string;
+  eventIds: string[];
   startDate: string;
   endDate: string;
   groupKey: string;
@@ -61,6 +74,14 @@ function formatDateLabel(value: string): string {
     return value;
   }
   return `${date.getFullYear()}/${String(date.getMonth() + 1).padStart(2, '0')}/${String(date.getDate()).padStart(2, '0')}`;
+}
+
+function formatMessageTime(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return '';
+  }
+  return `${String(date.getMonth() + 1).padStart(2, '0')}/${String(date.getDate()).padStart(2, '0')} ${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
 }
 
 function normalizeDateInput(value: string): string | null {
@@ -87,7 +108,7 @@ function formatEventStatus(event: EventSummary): string {
   if (event.status === 'cancelled') {
     return statusLabel(event.status);
   }
-  if (isEventFull(event) || isEventDeadlinePassed(event) || event.status === 'completed' || event.status === 'full') {
+  if (isEventFull(event) || isEventDeadlinePassed(event) || isEventExpired(event) || event.status === 'completed' || event.status === 'full') {
     return '結束';
   }
   return statusLabel(event.status);
@@ -128,12 +149,24 @@ function isEventDeadlinePassed(event: EventSummary): boolean {
   return Boolean(event.eventDeadline && event.eventDeadline < todayIso());
 }
 
+function isEventExpired(event: Pick<EventSummary, 'eventDate' | 'timeBlock'>): boolean {
+  const today = todayIso();
+  if (event.eventDate < today) {
+    return true;
+  }
+  if (event.eventDate > today) {
+    return false;
+  }
+  const now = new Date();
+  return now.getHours() + now.getMinutes() / 60 >= slotEndHour(event.timeBlock);
+}
+
 function isEventRecruitingVisible(event: EventSummary): boolean {
-  return event.status === 'open' && !isEventFull(event) && !isEventDeadlinePassed(event);
+  return event.status === 'open' && !isEventFull(event) && !isEventDeadlinePassed(event) && !isEventExpired(event);
 }
 
 function isEventLatestVisible(event: EventSummary): boolean {
-  return event.status !== 'cancelled' && (isEventFull(event) || !isEventDeadlinePassed(event));
+  return event.status !== 'cancelled' && !isEventExpired(event) && (isEventFull(event) || !isEventDeadlinePassed(event));
 }
 
 function slotEndHour(timeBlock: string): number {
@@ -283,12 +316,14 @@ function groupSlotsForBoard(slots: SlotSummary[]): GroupedSlot[] {
         isNextDate(current.endDate, slot.slotDate)
       ) {
         current.endDate = slot.slotDate;
+        current.slotIds.push(slot.id);
         continue;
       }
 
       current = {
         ...slot,
         firstSlotId: slot.id,
+        slotIds: [slot.id],
         startDate: slot.slotDate,
         endDate: slot.slotDate,
         groupKey,
@@ -327,12 +362,14 @@ function groupEventsForBoard(events: EventSummary[]): GroupedEvent[] {
       if (current && current.groupKey === groupKey && isNextDate(current.endDate, event.eventDate)) {
         current.endDate = event.eventDate;
         current.participantCount = Math.max(current.participantCount, event.participantCount);
+        current.eventIds.push(event.id);
         continue;
       }
 
       current = {
         ...event,
         firstEventId: event.id,
+        eventIds: [event.id],
         startDate: event.eventDate,
         endDate: event.eventDate,
         groupKey,
@@ -930,10 +967,11 @@ export function SlotsScreen({
 }: {
   userId: string;
   circles: CircleSummary[];
-  onOpenSlot: (slotId: string, dateRange?: { startDate: string; endDate: string }) => void;
+  onOpenSlot: (slotId: string, dateRange?: { startDate: string; endDate: string }, unreadCount?: number, relatedSlotIds?: string[]) => void;
   onBack: () => void;
 }) {
   const [slots, setSlots] = useState<SlotSummary[]>([]);
+  const [discussionSummaries, setDiscussionSummaries] = useState<Map<string, DiscussionSummary>>(new Map());
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -944,8 +982,13 @@ export function SlotsScreen({
       setError(null);
       try {
         const rows = await listVisibleSlotsForUser(userId);
+        const summaries = await listDiscussionSummaries(
+          userId,
+          rows.map((slot) => ({ scope: 'slot', targetId: slot.id })),
+        );
         if (!cancelled) {
           setSlots(rows);
+          setDiscussionSummaries(summaries);
         }
       } catch (err) {
         if (!cancelled) {
@@ -972,16 +1015,26 @@ export function SlotsScreen({
         {loading ? <ActivityIndicator /> : null}
         {error ? <Text style={styles.error}>{error}</Text> : null}
         {!loading && !error && groupedSlots.length === 0 ? <EmptyText>尚無可看見的悠閒時光</EmptyText> : null}
-        {groupedSlots.map((slot) => (
-          <TouchableOpacity
-            key={slot.firstSlotId}
-            style={styles.card}
-            onPress={() => onOpenSlot(slot.firstSlotId, { startDate: slot.startDate, endDate: slot.endDate })}
-          >
-            <Text style={styles.cardTitle}>{slot.createdByLabel} · {formatDateRangeLabel(slot.startDate, slot.endDate)} · {slot.timeBlock}</Text>
-            {slot.note ? <Text style={styles.cardLine} numberOfLines={1}>{slot.note}</Text> : null}
-          </TouchableOpacity>
-        ))}
+        {groupedSlots.map((slot) => {
+          const unreadCount = slot.slotIds.reduce(
+            (total, slotId) => total + (discussionSummaries.get(discussionKey('slot', slotId))?.unreadCount ?? 0),
+            0,
+          );
+          const slotIdToOpen = slot.slotIds.find((slotId) => (
+            (discussionSummaries.get(discussionKey('slot', slotId))?.unreadCount ?? 0) > 0
+          )) ?? slot.slotIds.find((slotId) => Boolean(discussionSummaries.get(discussionKey('slot', slotId))?.lastMessageAt)) ?? slot.firstSlotId;
+          return (
+            <TouchableOpacity
+              key={slot.firstSlotId}
+              style={[styles.card, unreadCount ? styles.unreadCard : null]}
+              onPress={() => onOpenSlot(slotIdToOpen, { startDate: slot.startDate, endDate: slot.endDate }, unreadCount, slot.slotIds)}
+            >
+              <Text style={styles.cardTitle}>{slot.createdByLabel} · {formatDateRangeLabel(slot.startDate, slot.endDate)} · {slot.timeBlock}</Text>
+              {unreadCount ? <Text style={styles.unreadText}>新對話 {unreadCount}</Text> : null}
+              {slot.note ? <Text style={styles.cardLine} numberOfLines={1}>{slot.note}</Text> : null}
+            </TouchableOpacity>
+          );
+        })}
         <View style={styles.buttonGap}>
           <Button title="返回首頁" onPress={onBack} color="#64748b" />
         </View>
@@ -998,10 +1051,11 @@ export function EventsScreen({
 }: {
   userId: string;
   circles: CircleSummary[];
-  onOpenEvent: (eventId: string, dateRange?: { startDate: string; endDate: string }) => void;
+  onOpenEvent: (eventId: string, dateRange?: { startDate: string; endDate: string }, unreadCount?: number, relatedEventIds?: string[]) => void;
   onBack: () => void;
 }) {
   const [events, setEvents] = useState<EventSummary[]>([]);
+  const [discussionSummaries, setDiscussionSummaries] = useState<Map<string, DiscussionSummary>>(new Map());
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -1012,8 +1066,13 @@ export function EventsScreen({
       setError(null);
       try {
         const rows = await listVisibleEventsForUser(userId);
+        const summaries = await listDiscussionSummaries(
+          userId,
+          rows.map((event) => ({ scope: 'event', targetId: event.id })),
+        );
         if (!cancelled) {
           setEvents(rows);
+          setDiscussionSummaries(summaries);
         }
       } catch (err) {
         if (!cancelled) {
@@ -1040,25 +1099,35 @@ export function EventsScreen({
         {loading ? <ActivityIndicator /> : null}
         {error ? <Text style={styles.error}>{error}</Text> : null}
         {!loading && !error && groupedEvents.length === 0 ? <EmptyText>尚無活動</EmptyText> : null}
-        {groupedEvents.map((event) => (
-          <TouchableOpacity
-            key={event.firstEventId}
-            style={styles.card}
-            onPress={() => onOpenEvent(event.firstEventId, { startDate: event.startDate, endDate: event.endDate })}
-          >
-            <Text style={styles.cardTitle}>{event.title}</Text>
-            <Text style={styles.cardLine}>{formatDateRangeLabel(event.startDate, event.endDate)} · {event.timeBlock}</Text>
-            {event.eventDeadline ? (
-              <Text style={styles.cardLine}>向隅時間：{formatDateLabel(event.eventDeadline)}</Text>
-            ) : null}
-            <Text style={styles.cardLine}>主揪：{event.createdByLabel}</Text>
-            <Text style={styles.cardLine}>小圈：{circleNameById(circles, event.circleRef)}</Text>
-            <Text style={styles.cardLine}>
-              參加：{formatNumberWithCommas(event.participantCount)}
-              {event.maxPeople ? ` / ${formatNumberWithCommas(event.maxPeople)}` : ''}
-            </Text>
-          </TouchableOpacity>
-        ))}
+        {groupedEvents.map((event) => {
+          const unreadCount = event.eventIds.reduce(
+            (total, eventId) => total + (discussionSummaries.get(discussionKey('event', eventId))?.unreadCount ?? 0),
+            0,
+          );
+          const eventIdToOpen = event.eventIds.find((eventId) => (
+            (discussionSummaries.get(discussionKey('event', eventId))?.unreadCount ?? 0) > 0
+          )) ?? event.eventIds.find((eventId) => Boolean(discussionSummaries.get(discussionKey('event', eventId))?.lastMessageAt)) ?? event.firstEventId;
+          return (
+            <TouchableOpacity
+              key={event.firstEventId}
+              style={[styles.card, unreadCount ? styles.unreadCard : null]}
+              onPress={() => onOpenEvent(eventIdToOpen, { startDate: event.startDate, endDate: event.endDate }, unreadCount, event.eventIds)}
+            >
+              <Text style={styles.cardTitle}>{event.title}</Text>
+              {unreadCount ? <Text style={styles.unreadText}>新對話 {unreadCount}</Text> : null}
+              <Text style={styles.cardLine}>{formatDateRangeLabel(event.startDate, event.endDate)} · {event.timeBlock}</Text>
+              {event.eventDeadline ? (
+                <Text style={styles.cardLine}>向隅時間：{formatDateLabel(event.eventDeadline)}</Text>
+              ) : null}
+              <Text style={styles.cardLine}>主揪：{event.createdByLabel}</Text>
+              <Text style={styles.cardLine}>小圈：{circleNameById(circles, event.circleRef)}</Text>
+              <Text style={styles.cardLine}>
+                參加：{formatNumberWithCommas(event.participantCount)}
+                {event.maxPeople ? ` / ${formatNumberWithCommas(event.maxPeople)}` : ''}
+              </Text>
+            </TouchableOpacity>
+          );
+        })}
         <View style={styles.buttonGap}>
           <Button title="返回首頁" onPress={onBack} color="#64748b" />
         </View>
@@ -1069,11 +1138,13 @@ export function EventsScreen({
 
 export function CirclesScreen({
   circles,
+  circleUnreadCounts,
   onOpenCircle,
   onBack,
 }: {
   circles: CircleSummary[];
-  onOpenCircle: (circleId: string) => void;
+  circleUnreadCounts: Record<string, number>;
+  onOpenCircle: (circleId: string, activityUnreadCount?: number) => void;
   onBack: () => void;
 }) {
   return (
@@ -1081,18 +1152,22 @@ export function CirclesScreen({
       <View style={styles.panel}>
         <Text style={styles.title}>我的密友圈</Text>
         {circles.length === 0 ? <EmptyText>尚無可進入的密友圈</EmptyText> : null}
-        {circles.map((circle) => (
-          <TouchableOpacity key={circle.id} style={styles.card} onPress={() => onOpenCircle(circle.id)}>
-            <Text style={styles.cardTitle}>{circle.circleName}</Text>
-            <Text style={styles.cardLine}>
-              {circle.role === 'owner' ? '圈主' : '成員'} · 成員 {circle.memberCount}
-              {circle.ownerLabel ? ` · 圈主：${circle.ownerLabel}` : ''}
-            </Text>
-            {circle.memberLabels.length > 0 ? (
-              <Text style={styles.cardLine}>成員：{circle.memberLabels.join('、')}</Text>
-            ) : null}
-          </TouchableOpacity>
-        ))}
+        {circles.map((circle) => {
+          const unreadCount = circleUnreadCounts[circle.id] ?? 0;
+          return (
+            <TouchableOpacity key={circle.id} style={[styles.card, unreadCount ? styles.unreadCard : null]} onPress={() => onOpenCircle(circle.id, unreadCount)}>
+              <Text style={styles.cardTitle}>{circle.circleName}</Text>
+              {unreadCount ? <Text style={styles.unreadText}>活動新對話 {unreadCount}</Text> : null}
+              <Text style={styles.cardLine}>
+                成員 {circle.memberCount}
+                {circle.ownerLabel ? ` · 圈主：${circle.ownerLabel}` : ''}
+              </Text>
+              {circle.memberLabels.length > 0 ? (
+                <Text style={styles.cardLine}>成員：{circle.memberLabels.join('、')}</Text>
+              ) : null}
+            </TouchableOpacity>
+          );
+        })}
         <View style={styles.buttonGap}>
           <Button title="返回首頁" onPress={onBack} color="#64748b" />
         </View>
@@ -1107,6 +1182,10 @@ export function SlotDetailScreen({
   circles,
   contextCircleId,
   displayDateRange,
+  unreadRefreshKey = 0,
+  unreadCountOverride = 0,
+  suppressUnread = false,
+  onOpenDiscussion,
   onBack,
 }: {
   slotId: string;
@@ -1114,9 +1193,14 @@ export function SlotDetailScreen({
   circles: CircleSummary[];
   contextCircleId?: string | null;
   displayDateRange?: { startDate: string; endDate: string } | null;
+  unreadRefreshKey?: number;
+  unreadCountOverride?: number;
+  suppressUnread?: boolean;
+  onOpenDiscussion: (title: string, subtitle?: string) => void;
   onBack: () => void;
 }) {
   const [slot, setSlot] = useState<SlotDetail | null>(null);
+  const [discussionSummary, setDiscussionSummary] = useState<DiscussionSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -1125,8 +1209,12 @@ export function SlotDetailScreen({
     setLoading(true);
     setError(null);
     try {
-      const row = await getSlotDetail(slotId);
+      const [row, summaries] = await Promise.all([
+        getSlotDetail(slotId),
+        listDiscussionSummaries(userId, [{ scope: 'slot', targetId: slotId }]),
+      ]);
       setSlot(row);
+      setDiscussionSummary(summaries.get(discussionKey('slot', slotId)) ?? null);
     } catch (err) {
       setError(formatErrorMessage(err));
     } finally {
@@ -1136,14 +1224,14 @@ export function SlotDetailScreen({
 
   useEffect(() => {
     void load();
-  }, [slotId]);
+  }, [slotId, userId, unreadRefreshKey]);
 
   const handleBook = async (circleId: string, message?: string) => {
     try {
       setBusy(true);
       await createSlotBooking({ slotId, circleId, requestedBy: userId, message });
       await load();
-      Alert.alert('悠閒時光', message ? '已送出先聊聊。' : '已送出預約。');
+      Alert.alert('悠閒時光', message ? '已送出訊息。' : '已送出預約。');
     } catch (err) {
       Alert.alert('預約失敗', formatErrorMessage(err));
     } finally {
@@ -1187,14 +1275,31 @@ export function SlotDetailScreen({
     .filter((circle): circle is CircleSummary => Boolean(circle));
   const bookingCircle = visibleCircles[0];
   const existingBooking = slot.bookings.find((booking) => booking.requestedBy === userId && booking.status !== 'cancelled');
+  const acceptedBooking = slot.bookings.find((booking) => booking.status === 'accepted');
   const slotClosed = slot.status !== 'open' || isSlotExpired(slot);
+  const slotDateLabel = formatDateRangeLabel(displayDateRange?.startDate ?? slot.slotDate, displayDateRange?.endDate ?? slot.slotDate);
+  const discussionTitle = `${slot.createdByLabel}的悠閒時光`;
+  const unreadDiscussionCount = suppressUnread ? 0 : Math.max(unreadCountOverride, discussionSummary?.unreadCount ?? 0);
+  const discussionButtonTitle = unreadDiscussionCount > 0 ? `聊什麼？未讀 ${unreadDiscussionCount}` : '聊什麼？';
+  const discussionButtonColor = unreadDiscussionCount > 0 ? '#dc2626' : '#7c3aed';
+  const hasBookingCounterpart = slot.bookings.some(
+    (booking) => booking.requestedBy !== userId && booking.status !== 'cancelled',
+  );
+  const canOpenDiscussion = slot.createdBy !== userId || hasBookingCounterpart || Boolean(discussionSummary?.hasOtherSender);
+  const handleOpenDiscussion = () => {
+    if (!canOpenDiscussion) {
+      Alert.alert('悠閒時光', '悠閒時間自己的喔~無法自己對話');
+      return;
+    }
+    onOpenDiscussion(discussionTitle, `${slotDateLabel} · ${slot.timeBlock}`);
+  };
 
   return (
     <ScrollView contentContainerStyle={styles.scroll}>
       <View style={styles.panel}>
         <Text style={styles.title}>悠閒時光</Text>
         <Text style={styles.cardTitle}>
-          {slot.createdByLabel} · {formatDateRangeLabel(displayDateRange?.startDate ?? slot.slotDate, displayDateRange?.endDate ?? slot.slotDate)} · {slot.timeBlock}
+          {slot.createdByLabel} · {slotDateLabel} · {slot.timeBlock}
         </Text>
         {slot.note ? <Text style={styles.cardLine}>{slot.note}</Text> : null}
         <Text style={styles.cardLine}>{slotDetailStatusText(slot)}</Text>
@@ -1205,17 +1310,17 @@ export function SlotDetailScreen({
             <View style={styles.row}>
               <View style={styles.rowBtn}>
                 <Button
-                  title={existingBooking ? '已送出' : '約'}
+                  title={acceptedBooking ? `已約 ${acceptedBooking.requesterLabel}` : existingBooking ? '已送出' : '約'}
                   onPress={() => void handleBook(bookingCircle.id)}
-                  disabled={busy || Boolean(existingBooking) || slot.createdBy === userId || slotClosed}
+                  disabled={busy || Boolean(existingBooking) || Boolean(acceptedBooking) || slot.createdBy === userId || slotClosed}
                 />
               </View>
               <View style={styles.rowBtn}>
                 <Button
-                  title="先聊聊"
-                  onPress={() => void handleBook(bookingCircle.id, '先聊聊')}
-                  disabled={busy || Boolean(existingBooking) || slot.createdBy === userId || slotClosed}
-                  color="#7c3aed"
+                  title={discussionButtonTitle}
+                  onPress={handleOpenDiscussion}
+                  disabled={busy}
+                  color={discussionButtonColor}
                 />
               </View>
             </View>
@@ -1261,15 +1366,24 @@ export function EventDetailScreen({
   userId,
   circles,
   displayDateRange,
+  unreadRefreshKey = 0,
+  unreadCountOverride = 0,
+  suppressUnread = false,
+  onOpenDiscussion,
   onBack,
 }: {
   eventId: string;
   userId: string;
   circles: CircleSummary[];
   displayDateRange?: { startDate: string; endDate: string } | null;
+  unreadRefreshKey?: number;
+  unreadCountOverride?: number;
+  suppressUnread?: boolean;
+  onOpenDiscussion: (title: string, subtitle?: string) => void;
   onBack: () => void;
 }) {
   const [event, setEvent] = useState<EventDetail | null>(null);
+  const [discussionSummary, setDiscussionSummary] = useState<DiscussionSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -1278,8 +1392,12 @@ export function EventDetailScreen({
     setLoading(true);
     setError(null);
     try {
-      const row = await getEventDetail(eventId);
+      const [row, summaries] = await Promise.all([
+        getEventDetail(eventId),
+        listDiscussionSummaries(userId, [{ scope: 'event', targetId: eventId }]),
+      ]);
       setEvent(row);
+      setDiscussionSummary(summaries.get(discussionKey('event', eventId)) ?? null);
     } catch (err) {
       setError(formatErrorMessage(err));
     } finally {
@@ -1289,7 +1407,7 @@ export function EventDetailScreen({
 
   useEffect(() => {
     void load();
-  }, [eventId]);
+  }, [eventId, userId, unreadRefreshKey]);
 
   const handleJoin = async (status: 'joined' | 'interested' | 'cancelled') => {
     try {
@@ -1329,13 +1447,18 @@ export function EventDetailScreen({
   const myParticipant = event.participants.find((participant) => participant.userId === userId);
   const isFull = Boolean(event.maxPeople && event.participantCount >= event.maxPeople && myParticipant?.status !== 'joined');
   const eventClosed = !isEventRecruitingVisible(event);
+  const eventDateLabel = formatDateRangeLabel(displayDateRange?.startDate ?? event.eventDate, displayDateRange?.endDate ?? event.eventDate);
+  const eventCircleName = circleNameById(circles, event.circleRef);
+  const unreadDiscussionCount = suppressUnread ? 0 : Math.max(unreadCountOverride, discussionSummary?.unreadCount ?? 0);
+  const discussionButtonTitle = unreadDiscussionCount > 0 ? `聊什麼？未讀 ${unreadDiscussionCount}` : '聊什麼？';
+  const discussionButtonColor = unreadDiscussionCount > 0 ? '#dc2626' : '#7c3aed';
 
   return (
     <ScrollView contentContainerStyle={styles.scroll}>
       <View style={styles.panel}>
         <Text style={styles.title}>{event.title}</Text>
-        <Text style={styles.hint}>{formatDateRangeLabel(displayDateRange?.startDate ?? event.eventDate, displayDateRange?.endDate ?? event.eventDate)} · {event.timeBlock}</Text>
-        <Text style={styles.cardLine}>小圈：{circleNameById(circles, event.circleRef)}</Text>
+        <Text style={styles.hint}>{eventDateLabel} · {event.timeBlock}</Text>
+        <Text style={styles.cardLine}>小圈：{eventCircleName}</Text>
         {event.eventDeadline ? (
           <Text style={styles.cardLine}>向隅時間：{formatDateLabel(event.eventDeadline)}</Text>
         ) : null}
@@ -1357,7 +1480,12 @@ export function EventDetailScreen({
             <Button title="參加" onPress={() => void handleJoin('joined')} disabled={busy || isFull || eventClosed} />
           </View>
           <View style={styles.rowBtn}>
-            <Button title="先聊聊" onPress={() => void handleJoin('interested')} disabled={busy || eventClosed} color="#7c3aed" />
+            <Button
+              title={discussionButtonTitle}
+              onPress={() => onOpenDiscussion(`${eventCircleName} ${event.title} 活動`, `${eventDateLabel} · ${event.timeBlock}`)}
+              disabled={busy}
+              color={discussionButtonColor}
+            />
           </View>
         </View>
         {myParticipant && myParticipant.status !== 'cancelled' ? (
@@ -1380,6 +1508,189 @@ export function EventDetailScreen({
         </View>
       </View>
     </ScrollView>
+  );
+}
+
+export function DiscussionScreen({
+  scope,
+  targetId,
+  userId,
+  title,
+  subtitle,
+  targetBackLabel,
+  relatedTargetIds = [],
+  onHome,
+  onBackToTarget,
+  onRead,
+}: {
+  scope: DiscussionScope;
+  targetId: string;
+  userId: string;
+  title: string;
+  subtitle?: string;
+  targetBackLabel: string;
+  relatedTargetIds?: string[];
+  onHome: () => void;
+  onBackToTarget: () => void;
+  onRead?: () => void;
+}) {
+  const [messages, setMessages] = useState<DiscussionMessage[]>([]);
+  const [draft, setDraft] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [sending, setSending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const messageScrollRef = useRef<ScrollView | null>(null);
+  const scrollToLatestMessage = () => {
+    requestAnimationFrame(() => {
+      messageScrollRef.current?.scrollToEnd({ animated: true });
+    });
+  };
+  const markRead = async (readMessages = messages) => {
+    const targetIdsToRead = Array.from(new Set([targetId, ...relatedTargetIds]));
+    try {
+      await Promise.all(targetIdsToRead.map(async (id) => {
+        const targetMessages = id === targetId ? readMessages : await listDiscussionMessages(scope, id);
+        const latestMessageAt = targetMessages[targetMessages.length - 1]?.createdAt ?? null;
+        await markDiscussionRead({ scope, targetId: id, userId, readAt: latestMessageAt });
+      }));
+      onRead?.();
+    } catch (err) {
+      if (__DEV__) {
+        console.warn('[discussion-read]', err);
+      }
+    }
+  };
+  const handleHome = async () => {
+    await markRead();
+    onHome();
+  };
+  const handleBackToTarget = async () => {
+    await markRead();
+    onBackToTarget();
+  };
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadMessages = async () => {
+      try {
+        setError(null);
+        const rows = await listDiscussionMessages(scope, targetId);
+        if (!cancelled) {
+          setMessages(rows);
+          scrollToLatestMessage();
+          void markRead(rows);
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setError(formatErrorMessage(err));
+        }
+      } finally {
+        if (!cancelled) {
+          setLoading(false);
+        }
+      }
+    };
+
+    setLoading(true);
+    void loadMessages();
+    const unsubscribe = subscribeToDiscussionMessages(scope, targetId, () => {
+      void loadMessages();
+    });
+
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
+  }, [scope, targetId]);
+
+  const handleSend = async () => {
+    const body = draft.trim();
+    if (!body) {
+      return;
+    }
+
+    try {
+      setSending(true);
+      await createDiscussionMessage({ scope, targetId, senderId: userId, body });
+      setDraft('');
+      const nextMessages = await listDiscussionMessages(scope, targetId);
+      setMessages(nextMessages);
+      scrollToLatestMessage();
+      void markRead(nextMessages);
+    } catch (err) {
+      Alert.alert('訊息送出失敗', formatErrorMessage(err));
+    } finally {
+      setSending(false);
+    }
+  };
+
+  const counterpartLabels = Array.from(
+    new Set(messages.filter((message) => message.senderId !== userId).map((message) => message.senderLabel)),
+  );
+  const latestCounterpartMessage = [...messages].reverse().find((message) => message.senderId !== userId);
+
+  return (
+    <View style={styles.discussionShell}>
+      <View style={styles.discussionPanel}>
+        <Text style={styles.discussionTitle}>{title}</Text>
+        {subtitle ? <Text style={styles.discussionSubtitle}>{subtitle}</Text> : null}
+        <View style={styles.discussionMetaBox}>
+          <Text style={styles.discussionMetaText}>
+            對方：{counterpartLabels.length > 0 ? counterpartLabels.join('、') : '等待對方回覆'}
+          </Text>
+          {latestCounterpartMessage ? (
+            <Text style={styles.discussionMetaText} numberOfLines={1}>
+              對方最新訊息：{latestCounterpartMessage.body}
+            </Text>
+          ) : null}
+        </View>
+
+        <View style={styles.messageBox}>
+          {loading ? <ActivityIndicator /> : null}
+          {error ? <Text style={styles.error}>{error}</Text> : null}
+          {!loading && !error && messages.length === 0 ? <EmptyText>尚無訊息，開始聊天吧</EmptyText> : null}
+          <ScrollView
+            ref={messageScrollRef}
+            contentContainerStyle={styles.messageListContent}
+            onContentSizeChange={scrollToLatestMessage}
+            onLayout={scrollToLatestMessage}
+          >
+            {messages.map((message) => {
+              const isMine = message.senderId === userId;
+              return (
+                <View key={message.id} style={[styles.messageBubble, isMine ? styles.messageBubbleMine : styles.messageBubbleOther]}>
+                  <Text style={styles.messageSender}>{message.senderLabel}{isMine ? '（我）' : ''}</Text>
+                  <Text style={styles.messageBody}>{message.body}</Text>
+                  <Text style={styles.messageTime} numberOfLines={1}>{formatMessageTime(message.createdAt)}</Text>
+                </View>
+              );
+            })}
+          </ScrollView>
+        </View>
+
+        <TextInput
+          style={[styles.input, styles.discussionInput]}
+          value={draft}
+          onChangeText={setDraft}
+          placeholder="輸入訊息..."
+          multiline
+        />
+        <Button title={sending ? '送出中...' : 'Send'} onPress={() => void handleSend()} disabled={sending || !draft.trim()} />
+        <Text style={styles.realtimeHint}>即時更新</Text>
+
+        <View style={styles.discussionNav}>
+          <TouchableOpacity style={styles.discussionNavButton} onPress={() => void handleHome()}>
+            <Text style={styles.discussionNavIcon}>HOME</Text>
+            <Text style={styles.discussionNavText}>首頁</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.discussionNavButton} onPress={() => void handleBackToTarget()}>
+            <Text style={styles.discussionNavIcon}>BACK</Text>
+            <Text style={styles.discussionNavText}>{targetBackLabel}</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+    </View>
   );
 }
 
@@ -1620,6 +1931,21 @@ const styles = StyleSheet.create({
     marginBottom: 10,
     backgroundColor: '#f8fafc',
   },
+  unreadCard: {
+    borderColor: '#f97316',
+    backgroundColor: '#fff7ed',
+  },
+  unreadText: {
+    alignSelf: 'flex-start',
+    backgroundColor: '#f97316',
+    borderRadius: 999,
+    color: '#ffffff',
+    fontSize: 12,
+    fontWeight: '800',
+    marginBottom: 6,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+  },
   cardTitle: {
     fontSize: 15,
     fontWeight: '700',
@@ -1630,6 +1956,127 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: '#475569',
     lineHeight: 19,
+  },
+  discussionShell: {
+    flex: 1,
+    width: '100%',
+    alignItems: 'center',
+  },
+  discussionPanel: {
+    flex: 1,
+    width: '100%',
+    maxWidth: 400,
+    backgroundColor: '#ffffff',
+    borderRadius: 12,
+    padding: 12,
+  },
+  discussionTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#a855f7',
+    textAlign: 'center',
+    marginBottom: 4,
+  },
+  discussionSubtitle: {
+    fontSize: 12,
+    color: '#64748b',
+    textAlign: 'center',
+    marginBottom: 8,
+  },
+  discussionMetaBox: {
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    borderRadius: 8,
+    backgroundColor: '#f8fafc',
+    padding: 8,
+    marginBottom: 8,
+  },
+  discussionMetaText: {
+    color: '#475569',
+    fontSize: 12,
+    lineHeight: 17,
+    fontWeight: '600',
+  },
+  messageBox: {
+    flex: 1,
+    minHeight: 160,
+    borderWidth: 1,
+    borderColor: '#cbd5e1',
+    borderRadius: 8,
+    backgroundColor: '#ffffff',
+    padding: 8,
+    marginBottom: 8,
+  },
+  messageListContent: {
+    flexGrow: 1,
+    justifyContent: 'flex-end',
+    paddingBottom: 8,
+  },
+  messageBubble: {
+    maxWidth: '96%',
+    minWidth: 120,
+    borderRadius: 10,
+    padding: 10,
+    marginBottom: 8,
+  },
+  messageBubbleMine: {
+    alignSelf: 'flex-end',
+    backgroundColor: '#eff6ff',
+  },
+  messageBubbleOther: {
+    alignSelf: 'flex-start',
+    backgroundColor: '#f1f5f9',
+  },
+  messageSender: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#334155',
+    marginBottom: 2,
+  },
+  messageBody: {
+    fontSize: 14,
+    color: '#0f172a',
+    lineHeight: 20,
+  },
+  messageTime: {
+    fontSize: 11,
+    color: '#94a3b8',
+    marginTop: 6,
+    textAlign: 'right',
+  },
+  discussionInput: {
+    minHeight: 62,
+    maxHeight: 92,
+    textAlignVertical: 'top',
+  },
+  realtimeHint: {
+    fontSize: 12,
+    color: '#64748b',
+    textAlign: 'center',
+    marginTop: 4,
+  },
+  discussionNav: {
+    flexDirection: 'row',
+    gap: 10,
+    borderWidth: 1,
+    borderColor: '#cbd5e1',
+    borderRadius: 8,
+    padding: 8,
+    marginTop: 8,
+  },
+  discussionNavButton: {
+    flex: 1,
+    alignItems: 'center',
+  },
+  discussionNavIcon: {
+    color: '#334155',
+    fontWeight: '800',
+    fontSize: 12,
+  },
+  discussionNavText: {
+    color: '#475569',
+    fontSize: 12,
+    marginTop: 2,
   },
   compactRow: {
     flexDirection: 'row',
