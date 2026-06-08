@@ -113,6 +113,18 @@ type DiscussionContext = {
   backLabel: string;
 };
 
+function isInvalidRefreshTokenError(err: unknown): boolean {
+  const message = formatErrorMessage(err).toLowerCase();
+  return message.includes('invalid refresh token') || message.includes('refresh token not found');
+}
+
+async function clearLocalAuthSession() {
+  const { error } = await supabase.auth.signOut({ scope: 'local' });
+  if (error && __DEV__) {
+    console.warn('[auth-local-signout]', error);
+  }
+}
+
 export default function App() {
   const [session, setSession] = useState<Session | null>(null);
   /** Avoid showing Login before AsyncStorage session is read (prevents OAuth race with stale session). */
@@ -242,12 +254,37 @@ export default function App() {
 
     const hydrate = async () => {
       try {
-        const { data } = await supabase.auth.getSession();
+        const { data, error } = await supabase.auth.getSession();
+        if (error) {
+          if (isInvalidRefreshTokenError(error)) {
+            await clearLocalAuthSession();
+            if (!cancelled) {
+              setSession(null);
+              await refreshPostAuthRoute(null);
+              setAuthRouteError('登入狀態已過期，請重新登入。');
+            }
+            return;
+          }
+          throw error;
+        }
         if (cancelled) {
           return;
         }
         setSession(data.session);
         await refreshPostAuthRoute(data.session);
+      } catch (err) {
+        if (cancelled) {
+          return;
+        }
+        if (isInvalidRefreshTokenError(err)) {
+          await clearLocalAuthSession();
+          setSession(null);
+          await refreshPostAuthRoute(null);
+          setAuthRouteError('登入狀態已過期，請重新登入。');
+          return;
+        }
+        setAuthRouteError(formatErrorMessage(err));
+        await refreshPostAuthRoute(null);
       } finally {
         if (!cancelled) {
           setAuthHydrated(true);
@@ -1024,10 +1061,11 @@ export default function App() {
 
   const clearDiscussionUnread = (scope: DiscussionContext['scope'], targetId: string, relatedTargetIds: string[] = []) => {
     const targetIds = Array.from(new Set([targetId, ...relatedTargetIds]));
+    const targetKeys = targetIds.map((id) => discussionKey(scope, id));
     setLocallyReadDiscussionKeys((current) => {
       const next = { ...current };
-      for (const id of targetIds) {
-        next[discussionKey(scope, id)] = true;
+      for (const key of targetKeys) {
+        next[key] = true;
       }
       return next;
     });
@@ -1042,10 +1080,25 @@ export default function App() {
         return next;
       });
       setSlotUnreadCount((current) => Math.max(0, current - clearedCount));
+      setUnreadRefreshTick((tick) => tick + 1);
       return;
     }
 
-    const clearedCount = targetIds.reduce((total, id) => total + (eventUnreadCounts[id] ?? 0), 0);
+    let clearedCount = targetIds.reduce((total, id) => total + (eventUnreadCounts[id] ?? 0), 0);
+    if (clearedCount === 0 && activeEventUnreadCount > 0) {
+      clearedCount = activeEventUnreadCount;
+    }
+    const clearedCountsByCircle = targetIds.reduce<Record<string, number>>((acc, id) => {
+      const circleId = eventCircleRefs[id] ?? activeCircleId;
+      const unreadCount = eventUnreadCounts[id] ?? 0;
+      if (circleId && unreadCount > 0) {
+        acc[circleId] = (acc[circleId] ?? 0) + unreadCount;
+      }
+      return acc;
+    }, {});
+    if (Object.keys(clearedCountsByCircle).length === 0 && activeCircleId && clearedCount > 0) {
+      clearedCountsByCircle[activeCircleId] = clearedCount;
+    }
     setActiveEventUnreadCount(0);
     setEventUnreadCounts((current) => {
       const next = { ...current };
@@ -1055,20 +1108,24 @@ export default function App() {
       return next;
     });
     if (activeCircleId) {
-      setActiveCircleUnreadCount((current) => Math.max(0, current - clearedCount));
-      setCircleUnreadCounts((current) => {
-        const nextCount = Math.max(0, (current[activeCircleId] ?? 0) - clearedCount);
-        const next = { ...current };
-        if (nextCount > 0) {
-          next[activeCircleId] = nextCount;
-        } else {
-          delete next[activeCircleId];
-        }
-        return next;
-      });
+      const activeCircleClearedCount = clearedCountsByCircle[activeCircleId] ?? clearedCount;
+      setActiveCircleUnreadCount((current) => Math.max(0, current - activeCircleClearedCount));
     } else {
       setActiveCircleUnreadCount(0);
     }
+    setCircleUnreadCounts((current) => {
+      const next = { ...current };
+      for (const [circleId, count] of Object.entries(clearedCountsByCircle)) {
+        const nextCount = Math.max(0, (next[circleId] ?? 0) - count);
+        if (nextCount > 0) {
+          next[circleId] = nextCount;
+        } else {
+          delete next[circleId];
+        }
+      }
+      return next;
+    });
+    setUnreadRefreshTick((tick) => tick + 1);
   };
 
   const displayedEventUnreadCounts = Object.fromEntries(
