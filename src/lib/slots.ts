@@ -16,6 +16,10 @@ export type SlotSummary = {
   note: string | null;
   createdAt: string;
   visibleCircleIds: string[];
+  activeBookingStatus: SlotBookingStatus | null;
+  activeBookingRequestedBy: string | null;
+  activeBookingRequesterLabel: string | null;
+  activeBookings: SlotBookingSummary[];
 };
 
 export type SlotBooking = {
@@ -71,7 +75,19 @@ type UserDisplayLabelRow = {
   label: string | null;
 };
 
-function toSlotSummary(row: SlotRow, visibleCircleIds: string[] = [], createdByLabel = row.created_by): SlotSummary {
+export type SlotBookingSummary = {
+  status: SlotBookingStatus;
+  requestedBy: string;
+  requesterLabel: string;
+};
+
+function toSlotSummary(
+  row: SlotRow,
+  visibleCircleIds: string[] = [],
+  createdByLabel = row.created_by,
+  bookingSummaries: SlotBookingSummary[] = [],
+): SlotSummary {
+  const firstBookingSummary = bookingSummaries[0];
   return {
     id: row.id,
     slotDate: row.slot_date,
@@ -83,6 +99,10 @@ function toSlotSummary(row: SlotRow, visibleCircleIds: string[] = [], createdByL
     note: row.note,
     createdAt: row.created_at,
     visibleCircleIds,
+    activeBookingStatus: firstBookingSummary?.status ?? null,
+    activeBookingRequestedBy: firstBookingSummary?.requestedBy ?? null,
+    activeBookingRequesterLabel: firstBookingSummary?.requesterLabel ?? null,
+    activeBookings: bookingSummaries,
   };
 }
 
@@ -95,6 +115,46 @@ function userLabel(row: UserLabelRow | undefined, fallback: string): string {
 
 function unique(values: string[]): string[] {
   return Array.from(new Set(values.filter(Boolean)));
+}
+
+function todayIso(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function slotEndHour(timeBlock: string): number {
+  const normalized = timeBlock.trim();
+  const timeMatches = Array.from(normalized.matchAll(/(\d{1,2})(?::(\d{2}))?/g));
+  if (timeMatches.length > 0) {
+    const last = timeMatches[timeMatches.length - 1];
+    const hour = Number(last[1]);
+    const minute = Number(last[2] ?? '0');
+    if (Number.isFinite(hour) && hour >= 0 && hour <= 23 && Number.isFinite(minute)) {
+      const isAfternoon = /下午|晚上/.test(normalized) && hour < 12;
+      return (isAfternoon ? hour + 12 : hour) + minute / 60;
+    }
+  }
+  if (normalized.includes('全天') || normalized.includes('晚上')) {
+    return 24;
+  }
+  if (normalized.includes('下午')) {
+    return 18;
+  }
+  if (normalized.includes('上午')) {
+    return 12;
+  }
+  return 24;
+}
+
+function isSlotExpired(slot: Pick<SlotSummary, 'slotDate' | 'timeBlock'>): boolean {
+  const today = todayIso();
+  if (slot.slotDate < today) {
+    return true;
+  }
+  if (slot.slotDate > today) {
+    return false;
+  }
+  const now = new Date();
+  return now.getHours() + now.getMinutes() / 60 >= slotEndHour(slot.timeBlock);
 }
 
 async function fetchSlotVisibility(slotIds: string[]): Promise<Map<string, string[]>> {
@@ -150,6 +210,40 @@ async function fetchUserLabels(userIds: string[]): Promise<Map<string, string>> 
     labels.set(row.uid, userLabel(row, row.uid));
   }
   return labels;
+}
+
+async function fetchActiveSlotBookings(slotIds: string[]): Promise<Map<string, SlotBookingSummary[]>> {
+  const bySlot = new Map<string, SlotBookingRow[]>();
+  if (slotIds.length === 0) {
+    return new Map();
+  }
+
+  const { data, error } = await supabase
+    .from(T.slotBookings)
+    .select('id, slot_id, circle_ref, requested_by, status, message, created_at')
+    .in('slot_id', slotIds)
+    .in('status', ['requested', 'accepted'])
+    .order('created_at', { ascending: true });
+
+  if (error) {
+    throw error;
+  }
+
+  for (const row of (data ?? []) as SlotBookingRow[]) {
+    bySlot.set(row.slot_id, [...(bySlot.get(row.slot_id) ?? []), row]);
+  }
+
+  const bookings = Array.from(bySlot.values()).flat();
+  const requesterLabels = await fetchUserLabels(bookings.map((booking) => booking.requested_by));
+  const summaries = new Map<string, SlotBookingSummary[]>();
+  for (const [slotId, slotBookings] of bySlot.entries()) {
+    summaries.set(slotId, slotBookings.map((booking) => ({
+      status: booking.status,
+      requestedBy: booking.requested_by,
+      requesterLabel: requesterLabels.get(booking.requested_by) ?? booking.requested_by,
+    })));
+  }
+  return summaries;
 }
 
 export async function createSlot(input: {
@@ -216,7 +310,13 @@ export async function listSlotsForCircle(circleId: string): Promise<SlotSummary[
   const visibilityBySlot = await fetchSlotVisibility(slotIds);
   const rows = (slots ?? []) as SlotRow[];
   const creatorLabels = await fetchUserLabels(rows.map((row) => row.created_by));
-  return rows.map((row) => toSlotSummary(row, visibilityBySlot.get(row.id) ?? [], creatorLabels.get(row.created_by)));
+  const bookingSummaries = await fetchActiveSlotBookings(rows.map((row) => row.id));
+  return rows.map((row) => toSlotSummary(
+    row,
+    visibilityBySlot.get(row.id) ?? [],
+    creatorLabels.get(row.created_by),
+    bookingSummaries.get(row.id) ?? [],
+  ));
 }
 
 export async function listVisibleSlotsForUser(uid: string): Promise<SlotSummary[]> {
@@ -254,7 +354,13 @@ export async function listVisibleSlotsForUser(uid: string): Promise<SlotSummary[
   const visibilityBySlot = await fetchSlotVisibility(slotIds);
   const rows = (slots ?? []) as SlotRow[];
   const creatorLabels = await fetchUserLabels(rows.map((row) => row.created_by));
-  return rows.map((row) => toSlotSummary(row, visibilityBySlot.get(row.id) ?? [], creatorLabels.get(row.created_by)));
+  const bookingSummaries = await fetchActiveSlotBookings(rows.map((row) => row.id));
+  return rows.map((row) => toSlotSummary(
+    row,
+    visibilityBySlot.get(row.id) ?? [],
+    creatorLabels.get(row.created_by),
+    bookingSummaries.get(row.id) ?? [],
+  ));
 }
 
 export async function getSlotDetail(slotId: string): Promise<SlotDetail | null> {
@@ -326,28 +432,25 @@ export async function createSlotBooking(input: {
   return String(data.id);
 }
 
+export async function countActiveSlotBookingsForUser(uid: string): Promise<number> {
+  const slots = await listVisibleSlotsForUser(uid);
+  return slots.filter((slot) => (
+    slot.status !== 'cancelled'
+    && !isSlotExpired(slot)
+    && slot.activeBookings.some((booking) => booking.requestedBy === uid || slot.createdBy === uid)
+  )).length;
+}
+
 export async function updateSlotBookingStatus(
   bookingId: string,
   status: SlotBookingStatus,
 ): Promise<void> {
-  const { data, error } = await supabase
+  const { error } = await supabase
     .from(T.slotBookings)
     .update({ status })
-    .eq('id', bookingId)
-    .select('slot_id')
-    .single();
+    .eq('id', bookingId);
 
   if (error) {
     throw error;
-  }
-
-  if (status === 'accepted') {
-    const { error: slotErr } = await supabase
-      .from(T.slots)
-      .update({ status: 'booked' })
-      .eq('id', data.slot_id);
-    if (slotErr) {
-      throw slotErr;
-    }
   }
 }

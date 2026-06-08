@@ -213,7 +213,7 @@ export function CircleDetailScreen({
   const [error, setError] = useState<string | null>(null);
   const eventTimeline = useMemo(() => buildEventTimeline(events.filter(isEventLatestVisible)), [events]);
   const visibleSlots = useMemo(
-    () => slots.filter((slot) => slot.status === 'open' && !isSlotExpired(slot)),
+    () => slots.filter((slot) => slot.status !== 'cancelled' && !isSlotExpired(slot)),
     [slots],
   );
 

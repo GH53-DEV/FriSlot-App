@@ -51,7 +51,7 @@ import {
   savePendingInviteDeepLink,
 } from './src/lib/pendingInviteStorage';
 import { listVisibleEventsForUser as listEventsForUnreadBadges } from './src/lib/events';
-import { listVisibleSlotsForUser as listSlotsForUnreadBadges } from './src/lib/slots';
+import { countActiveSlotBookingsForUser, listVisibleSlotsForUser as listSlotsForUnreadBadges } from './src/lib/slots';
 import { discussionKey, listDiscussionSummaries } from './src/lib/discussions';
 import { CircleDetailScreen } from './src/screens/CircleDetailScreen';
 import {
@@ -159,6 +159,7 @@ export default function App() {
   const [slotDiscussionUnreadCounts, setSlotDiscussionUnreadCounts] = useState<Record<string, number>>({});
   const [locallyReadDiscussionKeys, setLocallyReadDiscussionKeys] = useState<Record<string, true>>({});
   const [slotUnreadCount, setSlotUnreadCount] = useState(0);
+  const [bookedSlotCount, setBookedSlotCount] = useState(0);
   const [unreadRefreshTick, setUnreadRefreshTick] = useState(0);
   const [createContext, setCreateContext] = useState<CreateContext | null>(null);
   const claimingInviteTokenRef = useRef<string | null>(null);
@@ -589,6 +590,7 @@ export default function App() {
     setAccessibleCircles([]);
     setAccessibleCirclesError(null);
     setEventCircleRefs({});
+    setBookedSlotCount(0);
     setAppView('home');
     setInviteAfterCircle(null);
   };
@@ -933,6 +935,7 @@ export default function App() {
       setEventCircleRefs({});
       setSlotDiscussionUnreadCounts({});
       setSlotUnreadCount(0);
+      setBookedSlotCount(0);
       return;
     }
 
@@ -994,6 +997,21 @@ export default function App() {
         if (!cancelled) {
           setSlotDiscussionUnreadCounts({});
           setSlotUnreadCount(0);
+          setBookedSlotCount(0);
+        }
+      }
+
+      try {
+        const nextBookedSlotCount = await countActiveSlotBookingsForUser(userId);
+        if (!cancelled) {
+          setBookedSlotCount(nextBookedSlotCount);
+        }
+      } catch (err) {
+        if (__DEV__) {
+          console.warn('[slot-booked-count]', err);
+        }
+        if (!cancelled) {
+          setBookedSlotCount(0);
         }
       }
     };
@@ -1069,6 +1087,7 @@ export default function App() {
   const displayedSlotUnreadCounts = Object.fromEntries(
     Object.entries(slotDiscussionUnreadCounts).filter(([slotId]) => !locallyReadDiscussionKeys[discussionKey('slot', slotId)]),
   );
+  const displayedActivityUnreadCount = Object.values(displayedEventUnreadCounts).reduce((total, count) => total + count, 0);
   const displayedSlotUnreadCount = Object.values(displayedSlotUnreadCounts).reduce((total, count) => total + count, 0);
 
   const userLabel = session?.user.email ?? session?.user.id ?? '';
@@ -1238,6 +1257,7 @@ export default function App() {
         unreadRefreshKey={unreadRefreshTick}
         unreadCountOverride={Math.max(displayedSlotUnreadCounts[activeSlotId] ?? 0, activeSlotUnreadCount)}
         suppressUnread={Boolean(locallyReadDiscussionKeys[discussionKey('slot', activeSlotId)])}
+        onBookingChanged={() => setUnreadRefreshTick((tick) => tick + 1)}
         onOpenDiscussion={(title, subtitle) => {
           setActiveDiscussion({
             scope: 'slot',
@@ -1419,7 +1439,9 @@ export default function App() {
         userLabel={userLabel}
         circles={accessibleCircles}
         circleUnreadCounts={displayedCircleUnreadCounts}
+        activityUnreadCount={displayedActivityUnreadCount}
         slotUnreadCount={displayedSlotUnreadCount}
+        bookedSlotCount={bookedSlotCount}
         circlesLoading={routeLoading}
         circlesError={accessibleCirclesError}
         onOpenCircle={openCircleDetail}

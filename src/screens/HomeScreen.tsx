@@ -5,7 +5,9 @@ type HomeScreenProps = {
   userLabel: string;
   circles: CircleSummary[];
   circleUnreadCounts: Record<string, number>;
+  activityUnreadCount: number;
   slotUnreadCount: number;
+  bookedSlotCount: number;
   circlesLoading: boolean;
   circlesError: string | null;
   onOpenCircle: (circleId: string, activityUnreadCount?: number) => void;
@@ -22,7 +24,9 @@ export function HomeScreen({
   userLabel,
   circles,
   circleUnreadCounts,
+  activityUnreadCount,
   slotUnreadCount,
+  bookedSlotCount,
   circlesLoading,
   circlesError,
   onOpenCircle,
@@ -55,12 +59,22 @@ export function HomeScreen({
           <TouchableOpacity onPress={onOpenEvents}>
             <Text style={styles.linkLine}>查看活動揪人看板</Text>
           </TouchableOpacity>
+          {activityUnreadCount > 0 ? (
+            <TouchableOpacity onPress={onOpenEvents}>
+              <Text style={styles.privateUnreadText}>活動新對話 {activityUnreadCount}</Text>
+            </TouchableOpacity>
+          ) : null}
           <TouchableOpacity onPress={onOpenSlots}>
             <Text style={styles.linkLine}>查看悠閒時光看板</Text>
           </TouchableOpacity>
+          {bookedSlotCount > 0 ? (
+            <TouchableOpacity onPress={onOpenSlots}>
+              <Text style={styles.bookingText}>已約 {bookedSlotCount}</Text>
+            </TouchableOpacity>
+          ) : null}
           {slotUnreadCount > 0 ? (
             <TouchableOpacity onPress={onOpenSlots}>
-              <Text style={styles.privateUnreadText}>悠閒時光私聊新對話 {slotUnreadCount}</Text>
+              <Text style={styles.privateUnreadText}>私聊新對話 {slotUnreadCount}</Text>
             </TouchableOpacity>
           ) : null}
         </View>
@@ -79,13 +93,12 @@ export function HomeScreen({
               return (
               <TouchableOpacity
                 key={circle.id}
-                style={[styles.circleRow, unreadCount ? styles.circleRowUnread : null]}
+                style={styles.circleRow}
                 onPress={() => onOpenCircle(circle.id, unreadCount)}
               >
                 <Text style={styles.circleName}>
                   {circle.circleName}（{circle.memberCount}）
                 </Text>
-                {unreadCount ? <Text style={styles.unreadText}>活動新對話 {unreadCount}</Text> : null}
                 <Text style={styles.circleRole}>
                   圈主{circle.ownerLabel ? `：${circle.ownerLabel}` : ''}
                 </Text>
@@ -230,24 +243,20 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     marginBottom: 8,
   },
-  circleRowUnread: {
-    borderColor: '#f97316',
-    backgroundColor: '#fff7ed',
-  },
-  unreadText: {
+  privateUnreadText: {
     alignSelf: 'flex-start',
-    backgroundColor: '#f97316',
+    backgroundColor: '#dc2626',
     borderRadius: 999,
     color: '#ffffff',
     fontSize: 12,
     fontWeight: '800',
-    marginTop: 6,
+    marginTop: 8,
     paddingHorizontal: 8,
     paddingVertical: 3,
   },
-  privateUnreadText: {
+  bookingText: {
     alignSelf: 'flex-start',
-    backgroundColor: '#dc2626',
+    backgroundColor: '#0ea5e9',
     borderRadius: 999,
     color: '#ffffff',
     fontSize: 12,
