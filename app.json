@@ -15,12 +15,18 @@
     "scheme": "frislotnew",
     "linking": {
       "scheme": "frislotnew",
-      "prefixes": ["frislotnew://"]
+      "prefixes": [
+        "frislotnew://"
+      ]
     },
     "ios": {
       "supportsTablet": true,
       "infoPlist": {
-        "LSApplicationQueriesSchemes": ["line", "whatsapp", "tg"]
+        "LSApplicationQueriesSchemes": [
+          "line",
+          "whatsapp",
+          "tg"
+        ]
       }
     },
     "android": {
@@ -40,7 +46,10 @@
               "host": "invite"
             }
           ],
-          "category": ["BROWSABLE", "DEFAULT"]
+          "category": [
+            "BROWSABLE",
+            "DEFAULT"
+          ]
         }
       ]
     },
@@ -50,7 +59,10 @@
     "extra": {
       "supabaseUrl": "https://obebzwhqpfyvtnxtfzqc.supabase.co",
       "supabaseAnonKey": "sb_publishable_tMANYfhtc0HVym1qForu_g_h3m1fbxo",
-      "inviteBaseUrl": "https://gh53-dev.github.io/FriSlot-App/invite"
+      "inviteBaseUrl": "https://gh53-dev.github.io/FriSlot-App/invite",
+      "eas": {
+        "projectId": "ad76359e-d505-4beb-b43e-26a81dff4c80"
+      }
     },
     "plugins": [
       "expo-web-browser"
