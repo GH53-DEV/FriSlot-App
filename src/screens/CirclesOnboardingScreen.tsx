@@ -108,11 +108,11 @@ export function CirclesOnboardingScreen({
   return (
     <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
       <View style={styles.panel}>
-        <Text style={styles.title}>建立你的第一個密友圈</Text>
+        <Text style={styles.title}>擁有密友圈成為圈主</Text>
         <Text style={styles.hint}>
           {joiningViaInvitation
-            ? '你是被邀請加入圈子，請完成個人資料即可繼續。'
-            : '新帳號需先建立起始圈；完成後再選擇邀請方式（與流程圖一致）。'}
+            ? '你是被邀請加入圈子，資料會自動帶出；缺少的欄位再補填即可。'
+            : '建立自己的密友圈後，你就是圈主；也可以稍後再建圈。'}
         </Text>
 
         <TextInput
@@ -155,7 +155,7 @@ export function CirclesOnboardingScreen({
             style={styles.input}
             value={circleName}
             onChangeText={setCircleName}
-            placeholder="建立你的第一個密友圈"
+            placeholder="幫密友圈取個名字"
             editable={!busy}
           />
         ) : null}
@@ -163,13 +163,13 @@ export function CirclesOnboardingScreen({
         <View style={styles.row}>
           <View style={styles.rowBtn}>
             <Button
-              title={busy ? '建立中…' : joiningViaInvitation ? '建立' : '建立密友圈'}
+              title={busy ? '處理中…' : joiningViaInvitation ? '進入密友圈' : '建立密友圈'}
               onPress={handleCreate}
               disabled={busy}
             />
           </View>
           <View style={styles.rowBtn}>
-            <Button title="取消" onPress={() => void onCancel()} disabled={busy} color="#64748b" />
+            <Button title="稍後再建圈" onPress={() => void onCancel()} disabled={busy} color="#64748b" />
           </View>
         </View>
       </View>

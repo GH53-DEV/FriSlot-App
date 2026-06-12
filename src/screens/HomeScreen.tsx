@@ -7,6 +7,7 @@ type HomeScreenProps = {
   circleUnreadCounts: Record<string, number>;
   activityUnreadCount: number;
   slotUnreadCount: number;
+  requestedSlotCount: number;
   bookedSlotCount: number;
   circlesLoading: boolean;
   circlesError: string | null;
@@ -26,6 +27,7 @@ export function HomeScreen({
   circleUnreadCounts,
   activityUnreadCount,
   slotUnreadCount,
+  requestedSlotCount,
   bookedSlotCount,
   circlesLoading,
   circlesError,
@@ -67,6 +69,11 @@ export function HomeScreen({
           <TouchableOpacity onPress={onOpenSlots}>
             <Text style={styles.linkLine}>查看悠閒時光看板</Text>
           </TouchableOpacity>
+          {requestedSlotCount > 0 ? (
+            <TouchableOpacity onPress={onOpenSlots}>
+              <Text style={styles.bookingText}>預約 {requestedSlotCount}</Text>
+            </TouchableOpacity>
+          ) : null}
           {bookedSlotCount > 0 ? (
             <TouchableOpacity onPress={onOpenSlots}>
               <Text style={styles.bookingText}>已約 {bookedSlotCount}</Text>

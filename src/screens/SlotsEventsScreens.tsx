@@ -18,6 +18,7 @@ import {
   getSlotDetail,
   listVisibleSlotsForUser,
   updateSlotBookingStatus,
+  type SlotBooking,
   type SlotDetail,
   type SlotSummary,
 } from '../lib/slots';
@@ -33,10 +34,13 @@ import {
 import {
   createDiscussionMessage,
   discussionKey,
+  ensureSlotDiscussionParticipants,
   listDiscussionSummaries,
   listDiscussionMessages,
   markDiscussionRead,
   subscribeToDiscussionMessages,
+  slotDiscussionTargetId,
+  slotDiscussionTargetsForUser,
   type DiscussionMessage,
   type DiscussionScope,
   type DiscussionSummary,
@@ -982,9 +986,10 @@ export function SlotsScreen({
       setError(null);
       try {
         const rows = await listVisibleSlotsForUser(userId);
+        const targets = rows.flatMap((slot) => slotDiscussionTargetsForUser(slot, userId));
         const summaries = await listDiscussionSummaries(
           userId,
-          rows.map((slot) => ({ scope: 'slot', targetId: slot.id })),
+          targets,
         );
         if (!cancelled) {
           setSlots(rows);
@@ -1018,30 +1023,66 @@ export function SlotsScreen({
         {error ? <Text style={styles.error}>{error}</Text> : null}
         {!loading && !error && groupedSlots.length === 0 ? <EmptyText>尚無可看見的悠閒時光</EmptyText> : null}
         {groupedSlots.map((slot) => {
-          const bookingLabels = Array.from(new Set(
-            slot.slotIds
-              .flatMap((slotId) => slots.find((item) => item.id === slotId)?.activeBookings ?? [])
+          const groupedSourceSlots = slot.slotIds
+            .map((slotId) => slots.find((item) => item.id === slotId))
+            .filter((item): item is SlotSummary => Boolean(item));
+          const groupedBookings = groupedSourceSlots.flatMap((item) => item.activeBookings);
+          const ownsGroupedSlot = groupedSourceSlots.some((item) => item.createdBy === userId);
+          const displayBookings = ownsGroupedSlot
+            ? groupedBookings
+            : groupedBookings.filter((booking) => booking.requestedBy === userId);
+          const requestedBookingUserIds = Array.from(new Set(
+            displayBookings
+              .filter((booking) => booking.status === 'requested')
+              .map((booking) => booking.requestedBy),
+          ));
+          const acceptedBookingLabels = Array.from(new Set(
+            displayBookings
+              .filter((booking) => booking.status === 'accepted')
               .map((booking) => booking.requesterLabel),
           ));
-          const unreadCount = slot.slotIds.reduce(
-            (total, slotId) => total + (discussionSummaries.get(discussionKey('slot', slotId))?.unreadCount ?? 0),
-            0,
-          );
-          const slotIdToOpen = slot.slotIds.find((slotId) => (
-            (discussionSummaries.get(discussionKey('slot', slotId))?.unreadCount ?? 0) > 0
-          )) ?? slot.slotIds.find((slotId) => Boolean(discussionSummaries.get(discussionKey('slot', slotId))?.lastMessageAt)) ?? slot.firstSlotId;
+          const hasBookingBadge = requestedBookingUserIds.length > 0 || acceptedBookingLabels.length > 0;
+          const unreadCountBySlotId = new Map(slot.slotIds.map((slotId) => {
+            const sourceSlot = slots.find((item) => item.id === slotId);
+            const targets = sourceSlot ? slotDiscussionTargetsForUser(sourceSlot, userId) : [];
+            const count = targets.reduce(
+              (total, target) => total + (discussionSummaries.get(discussionKey(target.scope, target.targetId))?.unreadCount ?? 0),
+              0,
+            );
+            const hasMessages = targets.some((target) => Boolean(discussionSummaries.get(discussionKey(target.scope, target.targetId))?.lastMessageAt));
+            return [slotId, { count, hasMessages }] as const;
+          }));
+          const unreadCount = Array.from(unreadCountBySlotId.values()).reduce((total, item) => total + item.count, 0);
+          const slotIdToOpen = slot.slotIds.find((slotId) => (unreadCountBySlotId.get(slotId)?.count ?? 0) > 0)
+            ?? slot.slotIds.find((slotId) => unreadCountBySlotId.get(slotId)?.hasMessages)
+            ?? slot.firstSlotId;
+          const relatedTargetIds = Array.from(new Set(
+            groupedSourceSlots.flatMap((sourceSlot) => (
+              slotDiscussionTargetsForUser(sourceSlot, userId).map((target) => target.targetId)
+            )),
+          ));
           return (
             <TouchableOpacity
               key={slot.firstSlotId}
-              style={[styles.card, unreadCount || bookingLabels.length > 0 ? styles.unreadCard : null]}
-              onPress={() => onOpenSlot(slotIdToOpen, { startDate: slot.startDate, endDate: slot.endDate }, unreadCount, slot.slotIds)}
+              style={[styles.card, unreadCount || hasBookingBadge ? styles.unreadCard : null]}
+              onPress={() => onOpenSlot(
+                slotIdToOpen,
+                { startDate: slot.startDate, endDate: slot.endDate },
+                unreadCount,
+                relatedTargetIds.length ? relatedTargetIds : slot.slotIds,
+              )}
             >
-              <Text style={styles.cardTitle}>{slot.createdByLabel} · {formatDateRangeLabel(slot.startDate, slot.endDate)} · {slot.timeBlock}</Text>
-              {bookingLabels.length > 0 ? (
-                <Text style={styles.bookingBadge}>已約（{bookingLabels.join('、')}）</Text>
+              <Text style={styles.cardTitle}>
+                {slot.createdByLabel} · {formatDateRangeLabel(slot.startDate, slot.endDate)} · {slot.timeBlock}
+                {slot.note ? ` · ${slot.note}` : ''}
+              </Text>
+              {requestedBookingUserIds.length > 0 ? (
+                <Text style={styles.requestedBookingBadge}>預約 {requestedBookingUserIds.length}</Text>
+              ) : null}
+              {acceptedBookingLabels.length > 0 ? (
+                <Text style={styles.bookingBadge}>已約（{acceptedBookingLabels.join('、')}）</Text>
               ) : null}
               {unreadCount ? <Text style={styles.unreadText}>新對話 {unreadCount}</Text> : null}
-              {slot.note ? <Text style={styles.cardLine} numberOfLines={1}>{slot.note}</Text> : null}
             </TouchableOpacity>
           );
         })}
@@ -1195,6 +1236,7 @@ export function SlotDetailScreen({
   unreadRefreshKey = 0,
   unreadCountOverride = 0,
   suppressUnread = false,
+  locallyReadDiscussionKeys = {},
   onOpenDiscussion,
   onBookingChanged,
   onBack,
@@ -1207,29 +1249,62 @@ export function SlotDetailScreen({
   unreadRefreshKey?: number;
   unreadCountOverride?: number;
   suppressUnread?: boolean;
-  onOpenDiscussion: (title: string, subtitle?: string) => void;
+  locallyReadDiscussionKeys?: Record<string, true>;
+  onOpenDiscussion: (targetId: string, title: string, subtitle?: string, relatedTargetIds?: string[]) => void;
   onBookingChanged?: () => void;
   onBack: () => void;
 }) {
   const [slot, setSlot] = useState<SlotDetail | null>(null);
   const [availableSlots, setAvailableSlots] = useState<SlotSummary[]>([]);
   const [discussionSummary, setDiscussionSummary] = useState<DiscussionSummary | null>(null);
+  const [existingDiscussionTargetId, setExistingDiscussionTargetId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
+  const [openingDiscussion, setOpeningDiscussion] = useState(false);
+  const [pendingBookingActionId, setPendingBookingActionId] = useState<string | null>(null);
+  const [showBookingList, setShowBookingList] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const load = async () => {
     setLoading(true);
     setError(null);
     try {
-      const [row, summaries, visibleSlotRows] = await Promise.all([
+      const [row, visibleSlotRows] = await Promise.all([
         getSlotDetail(slotId),
-        listDiscussionSummaries(userId, [{ scope: 'slot', targetId: slotId }]),
         listVisibleSlotsForUser(userId),
       ]);
+      const targets = row ? slotDiscussionTargetsForUser(row, userId) : [];
+      const summaries = await listDiscussionSummaries(userId, targets);
+      const aggregateSummary: DiscussionSummary = {
+        scope: 'slot',
+        targetId: slotId,
+        lastMessageAt: null,
+        lastMessageBody: null,
+        hasOtherSender: false,
+        unreadCount: 0,
+      };
+      for (const target of targets) {
+        const summary = summaries.get(discussionKey(target.scope, target.targetId));
+        if (!summary) {
+          continue;
+        }
+        const hasBeenLocallyRead = Boolean(locallyReadDiscussionKeys[discussionKey(target.scope, target.targetId)]);
+        aggregateSummary.lastMessageAt = summary.lastMessageAt ?? aggregateSummary.lastMessageAt;
+        aggregateSummary.lastMessageBody = summary.lastMessageBody ?? aggregateSummary.lastMessageBody;
+        aggregateSummary.hasOtherSender = aggregateSummary.hasOtherSender || summary.hasOtherSender;
+        aggregateSummary.unreadCount += hasBeenLocallyRead ? 0 : summary.unreadCount;
+      }
+      const unreadTarget = targets.find((target) => (
+        !locallyReadDiscussionKeys[discussionKey(target.scope, target.targetId)]
+        && (summaries.get(discussionKey(target.scope, target.targetId))?.unreadCount ?? 0) > 0
+      ));
+      const messagedTarget = targets.find((target) => (
+        Boolean(summaries.get(discussionKey(target.scope, target.targetId))?.lastMessageAt)
+      ));
       setSlot(row);
       setAvailableSlots(visibleSlotRows);
-      setDiscussionSummary(summaries.get(discussionKey('slot', slotId)) ?? null);
+      setDiscussionSummary(aggregateSummary);
+      setExistingDiscussionTargetId(unreadTarget?.targetId ?? messagedTarget?.targetId ?? null);
     } catch (err) {
       setError(formatErrorMessage(err));
     } finally {
@@ -1239,7 +1314,40 @@ export function SlotDetailScreen({
 
   useEffect(() => {
     void load();
-  }, [slotId, userId, unreadRefreshKey]);
+  }, [slotId, userId, unreadRefreshKey, locallyReadDiscussionKeys]);
+
+  const openSlotDiscussion = async (participantIds: string[], title: string, subtitle: string, firstMessage?: string) => {
+    if (!slot) {
+      return;
+    }
+    try {
+      setOpeningDiscussion(true);
+      const targetId = slotDiscussionTargetId(slot.id, participantIds);
+      await ensureSlotDiscussionParticipants({ slotId: slot.id, targetId, participantIds });
+      if (firstMessage) {
+        await createDiscussionMessage({ scope: 'slot', targetId, senderId: userId, body: firstMessage });
+      }
+      onOpenDiscussion(targetId, title, subtitle, [targetId]);
+    } catch (err) {
+      Alert.alert('開啟私聊失敗', formatErrorMessage(err));
+    } finally {
+      setOpeningDiscussion(false);
+    }
+  };
+
+  const openExistingSlotDiscussion = (targetId: string, title: string, subtitle: string) => {
+    onOpenDiscussion(targetId, title, subtitle, [targetId]);
+  };
+
+  const sendSlotAutoMessage = async (booking: SlotBooking, body: string) => {
+    if (!slot) {
+      return;
+    }
+    const participantIds = [slot.createdBy, booking.requestedBy];
+    const targetId = slotDiscussionTargetId(slot.id, participantIds);
+    await ensureSlotDiscussionParticipants({ slotId: slot.id, targetId, participantIds });
+    await createDiscussionMessage({ scope: 'slot', targetId, senderId: userId, body });
+  };
 
   const handleBook = async (circleId: string, message?: string) => {
     try {
@@ -1254,17 +1362,52 @@ export function SlotDetailScreen({
       setBusy(false);
     }
   };
-  const handleCancelBooking = async (bookingId: string) => {
+  const handleCancelBooking = async (booking: SlotBooking) => {
     try {
       setBusy(true);
-      await updateSlotBookingStatus(bookingId, 'cancelled');
+      if (booking.status === 'accepted') {
+        await sendSlotAutoMessage(booking, '改天約囉');
+      }
+      await updateSlotBookingStatus(booking.id, 'cancelled');
       await load();
       onBookingChanged?.();
-      Alert.alert('悠閒時光', '已取消這次預約。');
+      Alert.alert('悠閒時光', booking.status === 'accepted' ? '已取消這次預約，並傳送「改天約囉」。' : '已取消這次預約。');
     } catch (err) {
       Alert.alert('取消失敗', formatErrorMessage(err));
     } finally {
       setBusy(false);
+    }
+  };
+  const handleAcceptBooking = async (booking: SlotBooking) => {
+    try {
+      setPendingBookingActionId(booking.id);
+      setBusy(true);
+      await updateSlotBookingStatus(booking.id, 'accepted');
+      await sendSlotAutoMessage({ ...booking, status: 'accepted' }, '見面聊');
+      await load();
+      onBookingChanged?.();
+      Alert.alert('悠閒時光', `已和 ${booking.requesterLabel} 約好，並傳送「見面聊」。`);
+    } catch (err) {
+      Alert.alert('更新失敗', formatErrorMessage(err));
+    } finally {
+      setBusy(false);
+      setPendingBookingActionId(null);
+    }
+  };
+  const handleDeclineBooking = async (booking: SlotBooking) => {
+    try {
+      setPendingBookingActionId(booking.id);
+      setBusy(true);
+      await sendSlotAutoMessage(booking, '改天約囉');
+      await updateSlotBookingStatus(booking.id, booking.status === 'accepted' ? 'cancelled' : 'declined');
+      await load();
+      onBookingChanged?.();
+      Alert.alert('悠閒時光', `已回覆 ${booking.requesterLabel}「改天約囉」。`);
+    } catch (err) {
+      Alert.alert('更新失敗', formatErrorMessage(err));
+    } finally {
+      setBusy(false);
+      setPendingBookingActionId(null);
     }
   };
 
@@ -1294,16 +1437,17 @@ export function SlotDetailScreen({
   const existingBooking = slot.bookings.find(
     (booking) => booking.requestedBy === userId && ['requested', 'accepted'].includes(booking.status),
   );
+  const declinedBooking = slot.bookings.find(
+    (booking) => booking.requestedBy === userId && booking.status === 'declined',
+  );
+  const cannotBookAfterDecline = Boolean(declinedBooking && !existingBooking);
+  const activeBookings = slot.bookings.filter((booking) => ['requested', 'accepted'].includes(booking.status));
+  const isOwner = slot.createdBy === userId;
   const slotClosed = slot.status === 'cancelled' || isSlotExpired(slot);
   const slotDateLabel = formatDateRangeLabel(displayDateRange?.startDate ?? slot.slotDate, displayDateRange?.endDate ?? slot.slotDate);
-  const discussionTitle = `${slot.createdByLabel}的悠閒時光`;
   const unreadDiscussionCount = suppressUnread ? 0 : Math.max(unreadCountOverride, discussionSummary?.unreadCount ?? 0);
   const discussionButtonTitle = unreadDiscussionCount > 0 ? `私聊？未讀 ${unreadDiscussionCount}` : '私聊？';
   const discussionButtonColor = unreadDiscussionCount > 0 ? '#dc2626' : '#7c3aed';
-  const hasBookingCounterpart = slot.bookings.some(
-    (booking) => booking.requestedBy !== userId && booking.status !== 'cancelled',
-  );
-  const canOpenDiscussion = slot.createdBy !== userId || hasBookingCounterpart || Boolean(discussionSummary?.hasOtherSender);
   const otherAvailableSlots = availableSlots.filter((item) => (
     item.id !== slot.id
     && item.slotDate === slot.slotDate
@@ -1312,10 +1456,16 @@ export function SlotDetailScreen({
     && !isSlotExpired(item)
   ));
   const handleBookingPress = () => {
+    if (isOwner) {
+      if (activeBookings.length > 0) {
+        setShowBookingList((current) => !current);
+      }
+      return;
+    }
     if (existingBooking) {
       Alert.alert('悠閒時光', '要取消這次預約嗎？', [
         { text: '先不要', style: 'cancel' },
-        { text: '改天約囉', style: 'destructive', onPress: () => void handleCancelBooking(existingBooking.id) },
+        { text: '改天約囉', style: 'destructive', onPress: () => void handleCancelBooking(existingBooking) },
       ]);
       return;
     }
@@ -1324,11 +1474,45 @@ export function SlotDetailScreen({
     }
   };
   const handleOpenDiscussion = () => {
-    if (!canOpenDiscussion) {
+    const subtitle = `${slotDateLabel} · ${slot.timeBlock}`;
+    if (slot.createdBy !== userId) {
+      if (existingDiscussionTargetId) {
+        openExistingSlotDiscussion(existingDiscussionTargetId, `${slot.createdByLabel}的悠閒時光`, subtitle);
+        return;
+      }
+      void openSlotDiscussion([slot.createdBy, userId], `${slot.createdByLabel}的悠閒時光`, subtitle);
+      return;
+    }
+    if (activeBookings.length === 0) {
+      if (existingDiscussionTargetId) {
+        openExistingSlotDiscussion(existingDiscussionTargetId, `${slot.createdByLabel}的悠閒時光`, subtitle);
+        return;
+      }
       Alert.alert('悠閒時光', '悠閒時間自己的喔~無法自己對話');
       return;
     }
-    onOpenDiscussion(discussionTitle, `${slotDateLabel} · ${slot.timeBlock}`);
+    const actions = activeBookings.map((booking) => ({
+      text: booking.requesterLabel,
+      onPress: () => void openSlotDiscussion(
+        [slot.createdBy, booking.requestedBy],
+        `${slot.createdByLabel} 與 ${booking.requesterLabel}`,
+        subtitle,
+      ),
+    }));
+    if (activeBookings.length > 1) {
+      actions.push({
+        text: '多人群聊',
+        onPress: () => void openSlotDiscussion(
+          [slot.createdBy, ...activeBookings.map((booking) => booking.requestedBy)],
+          `${slot.createdByLabel}的悠閒時光群聊`,
+          subtitle,
+        ),
+      });
+    }
+    Alert.alert('與誰私聊？', '請選擇聊天對象', [
+      ...actions,
+      { text: '取消', style: 'cancel' },
+    ]);
   };
 
   return (
@@ -1347,21 +1531,64 @@ export function SlotDetailScreen({
             <View style={styles.row}>
               <View style={styles.rowBtn}>
                 <Button
-                  title={existingBooking ? '改天約囉' : '約'}
+                  title={isOwner && activeBookings.length > 0 ? '誰約了？' : existingBooking ? '改天約囉' : '約'}
                   onPress={handleBookingPress}
-                  disabled={busy || slot.createdBy === userId || (!existingBooking && slotClosed)}
+                  disabled={busy || (isOwner && activeBookings.length === 0) || cannotBookAfterDecline || (!isOwner && !existingBooking && slotClosed)}
                 />
               </View>
               <View style={styles.rowBtn}>
                 <Button
                   title={discussionButtonTitle}
                   onPress={handleOpenDiscussion}
-                  disabled={busy}
+                  disabled={busy || openingDiscussion}
                   color={discussionButtonColor}
                 />
               </View>
             </View>
           </View>
+        ) : null}
+
+        {isOwner && showBookingList ? (
+          <>
+            <Text style={styles.sectionTitle}>誰約了？</Text>
+            {activeBookings.map((booking) => (
+              (() => {
+                const isActionPending = pendingBookingActionId === booking.id;
+                const isActionDisabled = busy || Boolean(pendingBookingActionId);
+                return (
+                  <View key={booking.id} style={styles.card}>
+                    <Text style={styles.cardTitle}>{booking.requesterLabel}</Text>
+                    <View style={styles.inlineActionRow}>
+                      <Text style={styles.cardLine}>狀態：{booking.status === 'accepted' ? '已約' : '預約中'}</Text>
+                      <View style={styles.compactActionGroup}>
+                        <TouchableOpacity
+                          style={[
+                            styles.compactActionBtn,
+                            (isActionPending || booking.status === 'accepted') && styles.compactActionDisabled,
+                          ]}
+                          onPress={() => void handleAcceptBooking(booking)}
+                          disabled={isActionDisabled || booking.status === 'accepted'}
+                        >
+                          <Text style={styles.compactActionText}>約</Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                          style={[
+                            styles.compactActionBtn,
+                            styles.compactActionSecondary,
+                            isActionPending && styles.compactActionDisabled,
+                          ]}
+                          onPress={() => void handleDeclineBooking(booking)}
+                          disabled={isActionDisabled}
+                        >
+                          <Text style={styles.compactActionText}>改天約囉</Text>
+                        </TouchableOpacity>
+                      </View>
+                    </View>
+                  </View>
+                );
+              })()
+            ))}
+          </>
         ) : null}
 
         <Text style={styles.sectionTitle}>還有誰可約</Text>
@@ -1568,13 +1795,13 @@ export function DiscussionScreen({
   };
   const markRead = async (readMessages = messages) => {
     const targetIdsToRead = Array.from(new Set([targetId, ...relatedTargetIds]));
+    onRead?.();
     try {
       await Promise.all(targetIdsToRead.map(async (id) => {
         const targetMessages = id === targetId ? readMessages : await listDiscussionMessages(scope, id);
         const latestMessageAt = targetMessages[targetMessages.length - 1]?.createdAt ?? null;
         await markDiscussionRead({ scope, targetId: id, userId, readAt: latestMessageAt });
       }));
-      onRead?.();
     } catch (err) {
       if (__DEV__) {
         console.warn('[discussion-read]', err);
@@ -1941,6 +2168,33 @@ const styles = StyleSheet.create({
   rowBtn: {
     flex: 1,
   },
+  inlineActionRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+  },
+  compactActionGroup: {
+    flexDirection: 'row',
+    gap: 6,
+  },
+  compactActionBtn: {
+    backgroundColor: '#2563eb',
+    borderRadius: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
+  compactActionSecondary: {
+    backgroundColor: '#64748b',
+  },
+  compactActionDisabled: {
+    opacity: 0.45,
+  },
+  compactActionText: {
+    color: '#ffffff',
+    fontSize: 12,
+    fontWeight: '800',
+  },
   buttonGap: {
     marginTop: 16,
   },
@@ -1970,6 +2224,17 @@ const styles = StyleSheet.create({
   bookingBadge: {
     alignSelf: 'flex-start',
     backgroundColor: '#0ea5e9',
+    borderRadius: 999,
+    color: '#ffffff',
+    fontSize: 12,
+    fontWeight: '800',
+    marginBottom: 6,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+  },
+  requestedBookingBadge: {
+    alignSelf: 'flex-start',
+    backgroundColor: '#f97316',
     borderRadius: 999,
     color: '#ffffff',
     fontSize: 12,

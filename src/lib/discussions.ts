@@ -42,6 +42,11 @@ type DiscussionReadRow = {
   last_read_at: string;
 };
 
+type DiscussionParticipantRow = {
+  scope: DiscussionScope;
+  target_id: string;
+};
+
 type UserLabelRow = {
   uid: string;
   email: string | null;
@@ -67,6 +72,84 @@ function unique(values: string[]): string[] {
 
 export function discussionKey(scope: DiscussionScope, targetId: string): string {
   return `${scope}:${targetId}`;
+}
+
+function hashHex(input: string, seed: number): string {
+  let hash = seed >>> 0;
+  for (let i = 0; i < input.length; i += 1) {
+    hash ^= input.charCodeAt(i);
+    hash = Math.imul(hash, 16777619) >>> 0;
+  }
+  return hash.toString(16).padStart(8, '0');
+}
+
+function stableUuid(input: string): string {
+  const hex = [
+    hashHex(input, 0x811c9dc5),
+    hashHex(input, 0x12345678),
+    hashHex(input, 0x9e3779b9),
+    hashHex(input, 0xabcdef01),
+  ].join('');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-5${hex.slice(13, 16)}-8${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
+}
+
+export function slotDiscussionTargetId(slotId: string, participantIds: string[]): string {
+  const participants = unique(participantIds).sort();
+  return stableUuid(`slot:${slotId}:${participants.join(':')}`);
+}
+
+export function slotDiscussionTargetsForUser(
+  slot: {
+    id: string;
+    createdBy: string;
+    activeBookings: Array<{ requestedBy: string; status: string }>;
+    discussionRequesterIds?: string[];
+  },
+  userId: string,
+): DiscussionTarget[] {
+  const requesterIds = unique([
+    ...(slot.discussionRequesterIds ?? []),
+    ...slot.activeBookings
+      .filter((booking) => ['requested', 'accepted'].includes(booking.status))
+      .map((booking) => booking.requestedBy),
+  ]);
+  const canSeeSlotThreads = slot.createdBy === userId || requesterIds.includes(userId);
+  if (!canSeeSlotThreads) {
+    return [];
+  }
+
+  const pairTargets = requesterIds
+    .filter((requesterId) => slot.createdBy === userId || requesterId === userId)
+    .map((requesterId) => ({
+      scope: 'slot' as const,
+      targetId: slotDiscussionTargetId(slot.id, [slot.createdBy, requesterId]),
+    }));
+  const groupTarget = requesterIds.length > 1
+    ? [{
+        scope: 'slot' as const,
+        targetId: slotDiscussionTargetId(slot.id, [slot.createdBy, ...requesterIds]),
+      }]
+    : [];
+
+  return Array.from(
+    new Map([...pairTargets, ...groupTarget].map((target) => [discussionKey(target.scope, target.targetId), target])).values(),
+  );
+}
+
+export async function ensureSlotDiscussionParticipants(input: {
+  slotId: string;
+  targetId: string;
+  participantIds: string[];
+}): Promise<void> {
+  const { error } = await supabase.rpc('ensure_slot_discussion_participants', {
+    p_slot_id: input.slotId,
+    p_target_id: input.targetId,
+    p_participant_ids: unique(input.participantIds),
+  });
+
+  if (error) {
+    throw error;
+  }
 }
 
 async function fetchUserLabels(userIds: string[]): Promise<Map<string, string>> {
@@ -155,7 +238,9 @@ export async function createDiscussionMessage(input: {
     );
 
     if (participantError) {
-      throw participantError;
+      if (__DEV__) {
+        console.warn('[discussion-participant-upsert]', participantError);
+      }
     }
   }
 
@@ -278,6 +363,26 @@ export async function listDiscussionSummaries(
   }
 
   return summaries;
+}
+
+export async function listUserDiscussionTargets(
+  userId: string,
+  scope: DiscussionScope,
+): Promise<DiscussionTarget[]> {
+  const { data, error } = await supabase
+    .from(T.discussionParticipants)
+    .select('scope, target_id')
+    .eq('user_id', userId)
+    .eq('scope', scope);
+
+  if (error) {
+    throw error;
+  }
+
+  return ((data ?? []) as DiscussionParticipantRow[]).map((row) => ({
+    scope: row.scope,
+    targetId: row.target_id,
+  }));
 }
 
 export function subscribeToDiscussionMessages(

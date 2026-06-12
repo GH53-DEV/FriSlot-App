@@ -2,6 +2,10 @@ import type { User } from '@supabase/supabase-js';
 import { supabase } from './supabase';
 import { T } from './schema';
 
+function isUniqueViolation(error: { code?: string } | null): boolean {
+  return error?.code === '23505';
+}
+
 export async function upsertUserFromAuth(user: User) {
   const displayName =
     (typeof user.user_metadata?.full_name === 'string' && user.user_metadata.full_name) ||
@@ -32,6 +36,9 @@ export async function upsertUserFromAuth(user: User) {
       mobile: user.phone ?? null,
     });
     if (error) {
+      if (isUniqueViolation(error)) {
+        return;
+      }
       throw error;
     }
     return;
@@ -97,6 +104,34 @@ export async function userExists(uid: string): Promise<boolean> {
   return data != null;
 }
 
+export type UserProfilePrefill = {
+  email: string;
+  realName: string;
+  displayName: string;
+  mobile: string;
+};
+
+export async function fetchUserProfilePrefill(uid: string): Promise<UserProfilePrefill | null> {
+  const { data, error } = await supabase
+    .from(T.users)
+    .select('email, real_name, display_name, mobile')
+    .eq('uid', uid)
+    .maybeSingle();
+
+  if (error) {
+    throw error;
+  }
+  if (!data) {
+    return null;
+  }
+  return {
+    email: String(data.email ?? ''),
+    realName: String(data.real_name ?? ''),
+    displayName: String(data.display_name ?? ''),
+    mobile: String(data.mobile ?? ''),
+  };
+}
+
 export type InvitationByTokenRow = {
   invitation_id: string;
   circle_ref: string;
@@ -151,6 +186,42 @@ export async function claimInvitationForExistingProfile(input: {
     invitationId: row?.invitation_id ?? null,
     circleRef: row?.circle_ref ?? null,
     status: row?.status ?? null,
+  };
+}
+
+export async function claimLatestAcceptedInvitationForUser(input: {
+  uid: string;
+  email: string;
+}): Promise<{
+  invitationId: string | null;
+  circleRef: string | null;
+  status: string | null;
+  email: string;
+  realName: string;
+  displayName: string;
+  mobile: string;
+} | null> {
+  const { data, error } = await supabase.rpc('claim_latest_accepted_invitation', {
+    p_uid: input.uid,
+    p_email: input.email,
+  });
+
+  if (error) {
+    throw error;
+  }
+
+  const row = Array.isArray(data) && data.length > 0 ? data[0] : null;
+  if (!row) {
+    return null;
+  }
+  return {
+    invitationId: row.invitation_id ?? null,
+    circleRef: row.circle_ref ?? null,
+    status: row.status ?? null,
+    email: String(row.email ?? ''),
+    realName: String(row.real_name ?? ''),
+    displayName: String(row.display_name ?? ''),
+    mobile: String(row.mobile ?? ''),
   };
 }
 

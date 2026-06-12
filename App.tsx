@@ -24,11 +24,14 @@ import {
 } from './src/lib/invitationShare';
 import {
   claimInvitationForExistingProfile,
+  claimLatestAcceptedInvitationForUser,
   createCircleForExistingUser,
   createEmailInvitationsForCircle,
   createFirstCircleAndInvites,
   createShareInvitationForCircle,
+  fetchUserProfilePrefill,
   fetchInvitationByToken,
+  upsertUserFromAuth,
   userExists,
   userHasOwnerCircle,
   userIsCircleMember,
@@ -51,8 +54,8 @@ import {
   savePendingInviteDeepLink,
 } from './src/lib/pendingInviteStorage';
 import { listVisibleEventsForUser as listEventsForUnreadBadges } from './src/lib/events';
-import { countActiveSlotBookingsForUser, listVisibleSlotsForUser as listSlotsForUnreadBadges } from './src/lib/slots';
-import { discussionKey, listDiscussionSummaries } from './src/lib/discussions';
+import { countSlotBookingBucketsForUser } from './src/lib/slots';
+import { discussionKey, listDiscussionSummaries, listUserDiscussionTargets } from './src/lib/discussions';
 import { CircleDetailScreen } from './src/screens/CircleDetailScreen';
 import {
   ChooseDateScreen,
@@ -151,6 +154,7 @@ export default function App() {
     circleId: string;
     circleName: string;
   } | null>(null);
+  const [ownerCircleOfferCircleId, setOwnerCircleOfferCircleId] = useState<string | null>(null);
   const [appView, setAppView] = useState<AppView>('home');
   const [accessibleCircles, setAccessibleCircles] = useState<CircleSummary[]>([]);
   const [accessibleCirclesError, setAccessibleCirclesError] = useState<string | null>(null);
@@ -171,6 +175,7 @@ export default function App() {
   const [slotDiscussionUnreadCounts, setSlotDiscussionUnreadCounts] = useState<Record<string, number>>({});
   const [locallyReadDiscussionKeys, setLocallyReadDiscussionKeys] = useState<Record<string, true>>({});
   const [slotUnreadCount, setSlotUnreadCount] = useState(0);
+  const [requestedSlotCount, setRequestedSlotCount] = useState(0);
   const [bookedSlotCount, setBookedSlotCount] = useState(0);
   const [unreadRefreshTick, setUnreadRefreshTick] = useState(0);
   const [createContext, setCreateContext] = useState<CreateContext | null>(null);
@@ -230,12 +235,37 @@ export default function App() {
     setAuthRouteError(null);
     try {
       const hasCircle = await userHasOwnerCircle(current.user.id);
-      const hasProfile = await userExists(current.user.id);
-      const circles = hasProfile ? await listAccessibleCircles(current.user.id) : [];
+      let hasProfile = await userExists(current.user.id);
+      let circles = await listAccessibleCircles(current.user.id);
+      const recoveredInvite = circles.length === 0
+        ? await claimLatestAcceptedInvitationForUser({
+            uid: current.user.id,
+            email: current.user.email ?? '',
+          })
+        : null;
+      if (recoveredInvite?.circleRef) {
+        setInviteeProfilePrefill({
+          email: recoveredInvite.email || current.user.email || '',
+          realName: recoveredInvite.realName,
+          displayName: recoveredInvite.displayName,
+          mobile: recoveredInvite.mobile,
+        });
+        setOwnerCircleOfferCircleId(recoveredInvite.circleRef);
+        hasProfile = true;
+        circles = await listAccessibleCircles(current.user.id);
+      }
+      const recoveredProfileFromMembership = !hasProfile && circles.length > 0;
+      if (recoveredProfileFromMembership) {
+        await upsertUserFromAuth(current.user);
+        hasProfile = true;
+      }
       setHasOwnerCircle(hasCircle);
       setHasUserProfile(hasProfile);
       setAccessibleCircles(circles);
       setAccessibleCirclesError(null);
+      if (recoveredProfileFromMembership) {
+        setOwnerCircleOfferCircleId(circles[0].id);
+      }
     } catch (err) {
       if (__DEV__) {
         console.error('[bootstrap]', err);
@@ -381,11 +411,16 @@ export default function App() {
         if (row.circle_ref) {
           setPendingInviteCircleId(row.circle_ref);
         }
+        const userProfile = session?.user.id ? await fetchUserProfilePrefill(session.user.id) : null;
+        const authDisplayName =
+          (typeof session?.user.user_metadata?.full_name === 'string' && session.user.user_metadata.full_name) ||
+          (typeof session?.user.user_metadata?.name === 'string' && session.user.user_metadata.name) ||
+          '';
         setInviteeProfilePrefill({
-          email: row.invited_email,
-          realName: row.invitee_real_name,
-          displayName: row.invitee_display_name,
-          mobile: row.invitee_mobile,
+          email: userProfile?.email || row.invited_email || session?.user.email || '',
+          realName: userProfile?.realName || row.invitee_real_name || '',
+          displayName: userProfile?.displayName || row.invitee_display_name || authDisplayName,
+          mobile: userProfile?.mobile || row.invitee_mobile || '',
         });
       } catch (err) {
         if (__DEV__) {
@@ -401,7 +436,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [acceptedInviteToken]);
+  }, [acceptedInviteToken, session?.user.email, session?.user.id, session?.user.user_metadata]);
 
   useEffect(() => {
     const user = session?.user;
@@ -422,11 +457,9 @@ export default function App() {
       try {
         const isMember = await userIsCircleMember(circleId, user.id);
         if (!cancelled && isMember) {
-          setActiveCircleId(circleId);
-          setAppView('circleDetail');
+          setOwnerCircleOfferCircleId(circleId);
           setPendingInviteCircleId(null);
           setAcceptedInviteToken(null);
-          setInviteeProfilePrefill(null);
           await clearPendingInviteDeepLink();
           return true;
         }
@@ -442,6 +475,7 @@ export default function App() {
       let navigated = false;
       try {
         setRouteLoading(true);
+        await upsertUserFromAuth(user);
         const claim = await claimInvitationForExistingProfile({
           uid: user.id,
           email: user.email ?? '',
@@ -451,11 +485,9 @@ export default function App() {
           return;
         }
         setAcceptedInviteToken(null);
-        setInviteeProfilePrefill(null);
         const targetCircleId = claim.circleRef ?? pendingInviteCircleId;
         if (targetCircleId) {
-          setActiveCircleId(targetCircleId);
-          setAppView('circleDetail');
+          setOwnerCircleOfferCircleId(targetCircleId);
           setPendingInviteCircleId(null);
           navigated = true;
           await clearPendingInviteDeepLink();
@@ -627,9 +659,11 @@ export default function App() {
     setAccessibleCircles([]);
     setAccessibleCirclesError(null);
     setEventCircleRefs({});
+    setRequestedSlotCount(0);
     setBookedSlotCount(0);
     setAppView('home');
     setInviteAfterCircle(null);
+    setOwnerCircleOfferCircleId(null);
   };
 
   const testSupabaseConnection = async () => {
@@ -719,13 +753,16 @@ export default function App() {
       setHasUserProfile(true);
       setAcceptedInviteToken(null);
       if (result.joinedViaInvitation) {
-        setInviteeProfilePrefill(null);
         setPendingInviteCircleId(null);
         await clearPendingInviteDeepLink();
       }
       if (result.circleId) {
-        setActiveCircleId(result.circleId);
-        setAppView('circleDetail');
+        if (result.joinedViaInvitation) {
+          setOwnerCircleOfferCircleId(result.circleId);
+        } else {
+          setActiveCircleId(result.circleId);
+          setAppView('circleDetail');
+        }
       }
     } catch (err) {
       Alert.alert('建立失敗', formatErrorMessage(err));
@@ -763,6 +800,7 @@ export default function App() {
       setHasOwnerCircle(result.joinedViaInvitation ? false : true);
       setHasUserProfile(true);
       setAcceptedInviteToken(null);
+      setOwnerCircleOfferCircleId(null);
       setInviteAfterCircle({ circleId: result.circleId, circleName: payload.circleName.trim() });
     } catch (err) {
       Alert.alert('建立失敗', formatErrorMessage(err));
@@ -865,6 +903,65 @@ export default function App() {
     }
     try {
       setOnboardingBusy(true);
+      if (ownerCircleOfferCircleId) {
+        const targetCircleId = ownerCircleOfferCircleId;
+        setOwnerCircleOfferCircleId(null);
+        setAcceptedInviteToken(null);
+        setPendingInviteCircleId(null);
+        await clearPendingInviteDeepLink();
+        setActiveCircleId(targetCircleId);
+        setAppView('circleDetail');
+        await refreshPostAuthRoute(session);
+        return;
+      }
+      if (acceptedInviteToken) {
+        const result = await createFirstCircleAndInvites({
+          uid: user.id,
+          email: inviteeProfilePrefill?.email || user.email || null,
+          circleName: '',
+          realName: inviteeProfilePrefill?.realName ?? '',
+          displayName:
+            inviteeProfilePrefill?.displayName ||
+            (typeof user.user_metadata?.full_name === 'string' ? user.user_metadata.full_name : '') ||
+            (typeof user.user_metadata?.name === 'string' ? user.user_metadata.name : ''),
+          photoUrl:
+            (typeof user.user_metadata?.avatar_url === 'string' && user.user_metadata.avatar_url) ||
+            null,
+          mobile: inviteeProfilePrefill?.mobile ?? '',
+          inviteEmails: [],
+          inviteBaseUrl,
+          acceptedInviteToken,
+          inviteMethod: 'none',
+        });
+        const targetCircleId = result.circleId ?? pendingInviteCircleId;
+        setHasOwnerCircle(false);
+        setHasUserProfile(true);
+        setAcceptedInviteToken(null);
+        setPendingInviteCircleId(null);
+        await clearPendingInviteDeepLink();
+        if (targetCircleId) {
+          setOwnerCircleOfferCircleId(targetCircleId);
+          await refreshPostAuthRoute(session);
+        }
+        return;
+      }
+      const recoveredInvite = await claimLatestAcceptedInvitationForUser({
+        uid: user.id,
+        email: user.email ?? '',
+      });
+      if (recoveredInvite?.circleRef) {
+        setInviteeProfilePrefill({
+          email: recoveredInvite.email || user.email || '',
+          realName: recoveredInvite.realName,
+          displayName: recoveredInvite.displayName,
+          mobile: recoveredInvite.mobile,
+        });
+        setHasOwnerCircle(false);
+        setHasUserProfile(true);
+        setOwnerCircleOfferCircleId(recoveredInvite.circleRef);
+        await refreshPostAuthRoute(session);
+        return;
+      }
       const profileExists = await userExists(user.id);
       if (profileExists) {
         setHasUserProfile(true);
@@ -972,6 +1069,7 @@ export default function App() {
       setEventCircleRefs({});
       setSlotDiscussionUnreadCounts({});
       setSlotUnreadCount(0);
+      setRequestedSlotCount(0);
       setBookedSlotCount(0);
       return;
     }
@@ -1008,18 +1106,18 @@ export default function App() {
       }
 
       try {
-        const slots = await listSlotsForUnreadBadges(userId);
+        const slotTargets = await listUserDiscussionTargets(userId, 'slot');
         const slotSummaries = await listDiscussionSummaries(
           userId,
-          slots.map((slot) => ({ scope: 'slot', targetId: slot.id })),
+          slotTargets,
         );
         let nextSlotUnreadCount = 0;
         const nextSlotDiscussionUnreadCounts: Record<string, number> = {};
-        for (const slot of slots) {
-          const key = discussionKey('slot', slot.id);
+        for (const target of slotTargets) {
+          const key = discussionKey('slot', target.targetId);
           const unreadCount = locallyReadDiscussionKeys[key] ? 0 : slotSummaries.get(key)?.unreadCount ?? 0;
           if (unreadCount > 0) {
-            nextSlotDiscussionUnreadCounts[slot.id] = unreadCount;
+            nextSlotDiscussionUnreadCounts[target.targetId] = unreadCount;
           }
           nextSlotUnreadCount += unreadCount;
         }
@@ -1039,15 +1137,17 @@ export default function App() {
       }
 
       try {
-        const nextBookedSlotCount = await countActiveSlotBookingsForUser(userId);
+        const bookingCounts = await countSlotBookingBucketsForUser(userId);
         if (!cancelled) {
-          setBookedSlotCount(nextBookedSlotCount);
+          setRequestedSlotCount(bookingCounts.requestedCount);
+          setBookedSlotCount(bookingCounts.acceptedCount);
         }
       } catch (err) {
         if (__DEV__) {
           console.warn('[slot-booked-count]', err);
         }
         if (!cancelled) {
+          setRequestedSlotCount(0);
           setBookedSlotCount(0);
         }
       }
@@ -1070,7 +1170,10 @@ export default function App() {
       return next;
     });
     if (scope === 'slot') {
-      const clearedCount = targetIds.reduce((total, id) => total + (slotDiscussionUnreadCounts[id] ?? 0), 0);
+      let clearedCount = targetIds.reduce((total, id) => total + (slotDiscussionUnreadCounts[id] ?? 0), 0);
+      if (clearedCount === 0 && activeSlotUnreadCount > 0) {
+        clearedCount = activeSlotUnreadCount;
+      }
       setActiveSlotUnreadCount(0);
       setSlotDiscussionUnreadCounts((current) => {
         const next = { ...current };
@@ -1170,7 +1273,7 @@ export default function App() {
         onDevTestConnection={testSupabaseConnection}
         invitePendingMessage={
           acceptedInviteToken
-            ? '已收到邀請連結，登入後將自動進入密友圈。'
+            ? '已收到邀請連結，登入後可選擇建立自己的密友圈，或稍後進入被邀請的密友圈。'
             : null
         }
       />
@@ -1217,6 +1320,20 @@ export default function App() {
         onSkip={handlePostSkipInvites}
       />
     );
+  } else if (session && ownerCircleOfferCircleId && !hasOwnerCircle) {
+    body = (
+      <CirclesOnboardingScreen
+        busy={onboardingBusy}
+        joiningViaInvitation={false}
+        initialEmail={inviteeProfilePrefill?.email || session.user.email || null}
+        initialRealName={inviteeProfilePrefill?.realName}
+        initialDisplayName={inviteeProfilePrefill?.displayName}
+        initialMobile={inviteeProfilePrefill?.mobile}
+        onJoiningSubmit={handleJoiningOnboardingSubmit}
+        onProfileAndCircleOnly={handleNewUserProfileAndCircle}
+        onCancel={handleOnboardingCancel}
+      />
+    );
   } else if (!hasOwnerCircle && !hasUserProfile) {
     body = (
       <CirclesOnboardingScreen
@@ -1249,10 +1366,10 @@ export default function App() {
         onCreateSlot={(circleId) => startCreateFlow('slot', [circleId], true)}
         onCreateEvent={(circleId) => startCreateFlow('event', [circleId], true)}
         onInviteFriend={inviteFriendFromCircle}
-        onOpenSlot={(slotId, unreadCount) => {
+        onOpenSlot={(slotId, unreadCount, relatedTargetIds) => {
           setActiveDiscussion(null);
           setActiveSlotId(slotId);
-          setActiveSlotRelatedIds([slotId]);
+          setActiveSlotRelatedIds(relatedTargetIds?.length ? relatedTargetIds : [slotId]);
           setActiveSlotUnreadCount(unreadCount ?? displayedSlotUnreadCounts[slotId] ?? 0);
           setActiveSlotDateRange(null);
           setAppView('slotDetail');
@@ -1286,19 +1403,14 @@ export default function App() {
         circles={accessibleCircles}
         defaultCircleIds={createContext.circleIds}
         lockCircleSelection={createContext.lockCircleSelection}
-        onCreated={(slotId) => {
+        onCreated={() => {
+          setCreateContext(null);
           setActiveDiscussion(null);
-          setActiveSlotId(slotId);
-          setActiveSlotRelatedIds([slotId]);
-          setActiveSlotDateRange(
-            createContext.dates.length > 1
-              ? {
-                  startDate: createContext.dates[0],
-                  endDate: createContext.dates[createContext.dates.length - 1],
-                }
-              : null,
-          );
-          setAppView('slotDetail');
+          setActiveSlotId(null);
+          setActiveSlotRelatedIds([]);
+          setActiveSlotDateRange(null);
+          setUnreadRefreshTick((tick) => tick + 1);
+          setAppView('home');
         }}
         onCancel={returnAfterCreateCancel}
       />
@@ -1312,14 +1424,21 @@ export default function App() {
         contextCircleId={activeCircleId}
         displayDateRange={activeSlotDateRange}
         unreadRefreshKey={unreadRefreshTick}
-        unreadCountOverride={Math.max(displayedSlotUnreadCounts[activeSlotId] ?? 0, activeSlotUnreadCount)}
-        suppressUnread={Boolean(locallyReadDiscussionKeys[discussionKey('slot', activeSlotId)])}
+        unreadCountOverride={Math.max(
+          activeSlotRelatedIds.reduce((total, id) => total + (displayedSlotUnreadCounts[id] ?? 0), 0),
+          activeSlotUnreadCount,
+        )}
+        suppressUnread={
+          activeSlotRelatedIds.length > 0
+          && activeSlotRelatedIds.every((id) => Boolean(locallyReadDiscussionKeys[discussionKey('slot', id)]))
+        }
+        locallyReadDiscussionKeys={locallyReadDiscussionKeys}
         onBookingChanged={() => setUnreadRefreshTick((tick) => tick + 1)}
-        onOpenDiscussion={(title, subtitle) => {
+        onOpenDiscussion={(targetId, title, subtitle, relatedTargetIds) => {
           setActiveDiscussion({
             scope: 'slot',
-            targetId: activeSlotId,
-            relatedTargetIds: activeSlotRelatedIds.includes(activeSlotId) ? activeSlotRelatedIds : [activeSlotId],
+            targetId,
+            relatedTargetIds: relatedTargetIds?.length ? relatedTargetIds : [targetId],
             title,
             subtitle,
             backLabel: '返回悠閒時光',
@@ -1355,6 +1474,7 @@ export default function App() {
         }}
         onBackToTarget={() => {
           clearDiscussionUnread(activeDiscussion.scope, activeDiscussion.targetId, activeDiscussion.relatedTargetIds);
+          setActiveSlotUnreadCount(0);
           setAppView('slotDetail');
         }}
       />
@@ -1498,6 +1618,7 @@ export default function App() {
         circleUnreadCounts={displayedCircleUnreadCounts}
         activityUnreadCount={displayedActivityUnreadCount}
         slotUnreadCount={displayedSlotUnreadCount}
+        requestedSlotCount={requestedSlotCount}
         bookedSlotCount={bookedSlotCount}
         circlesLoading={routeLoading}
         circlesError={accessibleCirclesError}

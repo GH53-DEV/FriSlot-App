@@ -15,6 +15,7 @@ import { listEventsForCircle, type EventSummary } from '../lib/events';
 import {
   discussionKey,
   listDiscussionSummaries,
+  slotDiscussionTargetsForUser,
   type DiscussionSummary,
 } from '../lib/discussions';
 
@@ -30,7 +31,7 @@ export type CircleDetailScreenProps = {
   onCreateSlot: (circleId: string) => void;
   onCreateEvent: (circleId: string) => void;
   onInviteFriend: (circleId: string, circleName: string) => void;
-  onOpenSlot: (slotId: string, unreadCount?: number) => void;
+  onOpenSlot: (slotId: string, unreadCount?: number, relatedTargetIds?: string[]) => void;
   onOpenEvent: (eventId: string, unreadCount?: number, relatedEventIds?: string[]) => void;
 };
 
@@ -216,6 +217,24 @@ export function CircleDetailScreen({
     () => slots.filter((slot) => slot.status !== 'cancelled' && !isSlotExpired(slot)),
     [slots],
   );
+  const slotBookingCounts = useMemo(
+    () => visibleSlots.reduce(
+      (counts, slot) => {
+        const relevantBookings = slot.activeBookings.filter(
+          (booking) => booking.requestedBy === userId || slot.createdBy === userId,
+        );
+        if (relevantBookings.some((booking) => booking.status === 'requested')) {
+          counts.requested += 1;
+        }
+        if (relevantBookings.some((booking) => booking.status === 'accepted')) {
+          counts.accepted += 1;
+        }
+        return counts;
+      },
+      { requested: 0, accepted: 0 },
+    ),
+    [userId, visibleSlots],
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -239,7 +258,7 @@ export function CircleDetailScreen({
           listEventsForCircle(circleId),
         ]);
         const summaries = await listDiscussionSummaries(userId, [
-          ...slotRows.map((slot) => ({ scope: 'slot' as const, targetId: slot.id })),
+          ...slotRows.flatMap((slot) => slotDiscussionTargetsForUser(slot, userId)),
           ...eventRows.map((event) => ({ scope: 'event' as const, targetId: event.id })),
         ]);
         if (cancelled) {
@@ -343,17 +362,27 @@ export function CircleDetailScreen({
         </View>
         <View style={styles.placeholderBox}>
           <Text style={styles.placeholderTitle}>悠閒時光</Text>
+          {slotBookingCounts.requested > 0 ? (
+            <Text style={styles.bookingLine}>預約 {slotBookingCounts.requested}</Text>
+          ) : null}
+          {slotBookingCounts.accepted > 0 ? (
+            <Text style={styles.bookingLine}>已約 {slotBookingCounts.accepted}</Text>
+          ) : null}
           {visibleSlots.length === 0 ? (
             <Text style={styles.placeholderMuted}>尚無悠閒時光</Text>
           ) : (
             visibleSlots.map((slot) => {
-              const key = discussionKey('slot', slot.id);
-              const summary = discussionSummaries.get(key);
-              const unreadCount = locallyReadDiscussionKeys[key] ? 0 : slotUnreadCounts[slot.id] ?? summary?.unreadCount ?? 0;
+              const targets = slotDiscussionTargetsForUser(slot, userId);
+              const unreadCount = targets.reduce((total, target) => {
+                const key = discussionKey(target.scope, target.targetId);
+                return total + (locallyReadDiscussionKeys[key] ? 0 : slotUnreadCounts[target.targetId] ?? discussionSummaries.get(key)?.unreadCount ?? 0);
+              }, 0);
+              const relatedTargetIds = targets.map((target) => target.targetId);
               return (
-                <TouchableOpacity key={slot.id} onPress={() => onOpenSlot(slot.id, unreadCount)}>
+                <TouchableOpacity key={slot.id} onPress={() => onOpenSlot(slot.id, unreadCount, relatedTargetIds)}>
                   <Text style={unreadCount ? styles.unreadLinkLine : styles.linkLine}>
                     {slot.createdByLabel} · {slot.slotDate} · {slot.timeBlock}
+                    {slot.note ? ` · ${slot.note}` : ''}
                     {unreadCount ? ` · 新對話 ${unreadCount}` : ''}
                   </Text>
                 </TouchableOpacity>
@@ -453,6 +482,12 @@ const styles = StyleSheet.create({
   },
   unreadLinkLine: {
     color: '#dc2626',
+    fontSize: 13,
+    fontWeight: '800',
+    marginTop: 6,
+  },
+  bookingLine: {
+    color: '#0ea5e9',
     fontSize: 13,
     fontWeight: '800',
     marginTop: 6,

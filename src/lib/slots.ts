@@ -20,6 +20,7 @@ export type SlotSummary = {
   activeBookingRequestedBy: string | null;
   activeBookingRequesterLabel: string | null;
   activeBookings: SlotBookingSummary[];
+  discussionRequesterIds: string[];
 };
 
 export type SlotBooking = {
@@ -86,6 +87,7 @@ function toSlotSummary(
   visibleCircleIds: string[] = [],
   createdByLabel = row.created_by,
   bookingSummaries: SlotBookingSummary[] = [],
+  discussionRequesterIds: string[] = [],
 ): SlotSummary {
   const firstBookingSummary = bookingSummaries[0];
   return {
@@ -103,6 +105,7 @@ function toSlotSummary(
     activeBookingRequestedBy: firstBookingSummary?.requestedBy ?? null,
     activeBookingRequesterLabel: firstBookingSummary?.requesterLabel ?? null,
     activeBookings: bookingSummaries,
+    discussionRequesterIds,
   };
 }
 
@@ -246,6 +249,27 @@ async function fetchActiveSlotBookings(slotIds: string[]): Promise<Map<string, S
   return summaries;
 }
 
+async function fetchSlotDiscussionRequesterIds(slotIds: string[]): Promise<Map<string, string[]>> {
+  if (slotIds.length === 0) {
+    return new Map();
+  }
+
+  const { data, error } = await supabase
+    .from(T.slotBookings)
+    .select('slot_id, requested_by')
+    .in('slot_id', slotIds);
+
+  if (error) {
+    throw error;
+  }
+
+  const requesterIdsBySlot = new Map<string, string[]>();
+  for (const row of (data ?? []) as Pick<SlotBookingRow, 'slot_id' | 'requested_by'>[]) {
+    requesterIdsBySlot.set(row.slot_id, unique([...(requesterIdsBySlot.get(row.slot_id) ?? []), row.requested_by]));
+  }
+  return requesterIdsBySlot;
+}
+
 export async function createSlot(input: {
   slotDate: string;
   timeBlock: string;
@@ -311,11 +335,13 @@ export async function listSlotsForCircle(circleId: string): Promise<SlotSummary[
   const rows = (slots ?? []) as SlotRow[];
   const creatorLabels = await fetchUserLabels(rows.map((row) => row.created_by));
   const bookingSummaries = await fetchActiveSlotBookings(rows.map((row) => row.id));
+  const discussionRequesterIds = await fetchSlotDiscussionRequesterIds(rows.map((row) => row.id));
   return rows.map((row) => toSlotSummary(
     row,
     visibilityBySlot.get(row.id) ?? [],
     creatorLabels.get(row.created_by),
     bookingSummaries.get(row.id) ?? [],
+    discussionRequesterIds.get(row.id) ?? [],
   ));
 }
 
@@ -355,11 +381,13 @@ export async function listVisibleSlotsForUser(uid: string): Promise<SlotSummary[
   const rows = (slots ?? []) as SlotRow[];
   const creatorLabels = await fetchUserLabels(rows.map((row) => row.created_by));
   const bookingSummaries = await fetchActiveSlotBookings(rows.map((row) => row.id));
+  const discussionRequesterIds = await fetchSlotDiscussionRequesterIds(rows.map((row) => row.id));
   return rows.map((row) => toSlotSummary(
     row,
     visibilityBySlot.get(row.id) ?? [],
     creatorLabels.get(row.created_by),
     bookingSummaries.get(row.id) ?? [],
+    discussionRequesterIds.get(row.id) ?? [],
   ));
 }
 
@@ -395,7 +423,19 @@ export async function getSlotDetail(slotId: string): Promise<SlotDetail | null> 
   const requesterLabels = await fetchUserLabels(requesterIds);
 
   return {
-    ...toSlotSummary(slotRow, visibilityBySlot.get(slotId) ?? [], creatorLabels.get(slotRow.created_by)),
+    ...toSlotSummary(
+      slotRow,
+      visibilityBySlot.get(slotId) ?? [],
+      creatorLabels.get(slotRow.created_by),
+      bookings
+        .filter((booking) => ['requested', 'accepted'].includes(booking.status))
+        .map((booking) => ({
+          status: booking.status,
+          requestedBy: booking.requested_by,
+          requesterLabel: requesterLabels.get(booking.requested_by) ?? booking.requested_by,
+        })),
+      requesterIds,
+    ),
     bookings: bookings.map((booking) => ({
       id: booking.id,
       slotId: booking.slot_id,
@@ -439,6 +479,31 @@ export async function countActiveSlotBookingsForUser(uid: string): Promise<numbe
     && !isSlotExpired(slot)
     && slot.activeBookings.some((booking) => booking.requestedBy === uid || slot.createdBy === uid)
   )).length;
+}
+
+export async function countSlotBookingBucketsForUser(uid: string): Promise<{
+  requestedCount: number;
+  acceptedCount: number;
+}> {
+  const slots = await listVisibleSlotsForUser(uid);
+  return slots.reduce(
+    (counts, slot) => {
+      if (slot.status === 'cancelled' || isSlotExpired(slot)) {
+        return counts;
+      }
+      const relevantBookings = slot.activeBookings.filter(
+        (booking) => booking.requestedBy === uid || slot.createdBy === uid,
+      );
+      if (relevantBookings.some((booking) => booking.status === 'requested')) {
+        counts.requestedCount += 1;
+      }
+      if (relevantBookings.some((booking) => booking.status === 'accepted')) {
+        counts.acceptedCount += 1;
+      }
+      return counts;
+    },
+    { requestedCount: 0, acceptedCount: 0 },
+  );
 }
 
 export async function updateSlotBookingStatus(
