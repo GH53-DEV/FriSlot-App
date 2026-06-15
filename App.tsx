@@ -54,8 +54,12 @@ import {
   savePendingInviteDeepLink,
 } from './src/lib/pendingInviteStorage';
 import { listVisibleEventsForUser as listEventsForUnreadBadges } from './src/lib/events';
-import { countSlotBookingBucketsForUser } from './src/lib/slots';
-import { discussionKey, listDiscussionSummaries, listUserDiscussionTargets } from './src/lib/discussions';
+import { countSlotBookingBucketsForUser, isSlotExpired, listVisibleSlotsForUser } from './src/lib/slots';
+import {
+  discussionKey,
+  listDiscussionSummaries,
+  slotDiscussionTargetsForUser,
+} from './src/lib/discussions';
 import { CircleDetailScreen } from './src/screens/CircleDetailScreen';
 import {
   ChooseDateScreen,
@@ -1106,7 +1110,15 @@ export default function App() {
       }
 
       try {
-        const slotTargets = await listUserDiscussionTargets(userId, 'slot');
+        const visibleSlots = await listVisibleSlotsForUser(userId);
+        const slotTargets = Array.from(
+          new Map(
+            visibleSlots
+              .filter((slot) => slot.status !== 'cancelled' && !isSlotExpired(slot))
+              .flatMap((slot) => slotDiscussionTargetsForUser(slot, userId))
+              .map((target) => [discussionKey(target.scope, target.targetId), target]),
+          ).values(),
+        );
         const slotSummaries = await listDiscussionSummaries(
           userId,
           slotTargets,
@@ -1573,6 +1585,7 @@ export default function App() {
       <SlotsScreen
         userId={session.user.id}
         circles={accessibleCircles}
+        locallyReadDiscussionKeys={locallyReadDiscussionKeys}
         onOpenSlot={(slotId, dateRange, unreadCount, relatedSlotIds) => {
           setCreateContext(null);
           setActiveDiscussion(null);

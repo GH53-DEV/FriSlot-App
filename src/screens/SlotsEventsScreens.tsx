@@ -966,11 +966,13 @@ export function CreateCircleScreen({
 export function SlotsScreen({
   userId,
   circles,
+  locallyReadDiscussionKeys = {},
   onOpenSlot,
   onBack,
 }: {
   userId: string;
   circles: CircleSummary[];
+  locallyReadDiscussionKeys?: Record<string, true>;
   onOpenSlot: (slotId: string, dateRange?: { startDate: string; endDate: string }, unreadCount?: number, relatedSlotIds?: string[]) => void;
   onBack: () => void;
 }) {
@@ -1046,7 +1048,10 @@ export function SlotsScreen({
             const sourceSlot = slots.find((item) => item.id === slotId);
             const targets = sourceSlot ? slotDiscussionTargetsForUser(sourceSlot, userId) : [];
             const count = targets.reduce(
-              (total, target) => total + (discussionSummaries.get(discussionKey(target.scope, target.targetId))?.unreadCount ?? 0),
+              (total, target) => {
+                const key = discussionKey(target.scope, target.targetId);
+                return total + (locallyReadDiscussionKeys[key] ? 0 : discussionSummaries.get(key)?.unreadCount ?? 0);
+              },
               0,
             );
             const hasMessages = targets.some((target) => Boolean(discussionSummaries.get(discussionKey(target.scope, target.targetId))?.lastMessageAt));

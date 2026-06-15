@@ -148,7 +148,7 @@ function slotEndHour(timeBlock: string): number {
   return 24;
 }
 
-function isSlotExpired(slot: Pick<SlotSummary, 'slotDate' | 'timeBlock'>): boolean {
+export function isSlotExpired(slot: Pick<SlotSummary, 'slotDate' | 'timeBlock'>): boolean {
   const today = todayIso();
   if (slot.slotDate < today) {
     return true;
