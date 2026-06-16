@@ -2,7 +2,7 @@
   "expo": {
     "name": "FriSlot_New",
     "slug": "FriSlot_New",
-    "owner": "koyu1000603",
+    "owner": "friteam",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
@@ -73,6 +73,7 @@
       "policy": "appVersion"
     },
     "updates": {
+      "checkAutomatically": "NEVER",
       "url": "https://u.expo.dev/ad76359e-d505-4beb-b43e-26a81dff4c80"
     }
   }

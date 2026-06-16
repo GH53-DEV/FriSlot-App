@@ -1,15 +1,26 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   Button,
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   TouchableOpacity,
   View,
 } from 'react-native';
 import { formatErrorMessage } from '../lib/formatErrorMessage';
-import { getCircleForUser, listCircleMembers, type CircleDetail, type CircleMemberSummary } from '../lib/circleAccess';
+import {
+  getCircleForUser,
+  leaveCircle,
+  listCircleMembers,
+  removeCircle,
+  removeCircleMembers,
+  type CircleDetail,
+  type CircleMemberSummary,
+  type RemoveCircleMembersScope,
+} from '../lib/circleAccess';
 import { listSlotsForCircle, type SlotSummary } from '../lib/slots';
 import { listEventsForCircle, type EventSummary } from '../lib/events';
 import {
@@ -33,6 +44,7 @@ export type CircleDetailScreenProps = {
   onInviteFriend: (circleId: string, circleName: string) => void;
   onOpenSlot: (slotId: string, unreadCount?: number, relatedTargetIds?: string[]) => void;
   onOpenEvent: (eventId: string, unreadCount?: number, relatedEventIds?: string[]) => void;
+  onMembershipChanged?: () => void | Promise<void>;
 };
 
 type EventTimelineItem = {
@@ -204,6 +216,7 @@ export function CircleDetailScreen({
   onInviteFriend,
   onOpenSlot,
   onOpenEvent,
+  onMembershipChanged,
 }: CircleDetailScreenProps) {
   const [loading, setLoading] = useState(true);
   const [circle, setCircle] = useState<CircleDetail | null>(null);
@@ -212,11 +225,27 @@ export function CircleDetailScreen({
   const [events, setEvents] = useState<EventSummary[]>([]);
   const [discussionSummaries, setDiscussionSummaries] = useState<Map<string, DiscussionSummary>>(new Map());
   const [error, setError] = useState<string | null>(null);
+  const [actionBusy, setActionBusy] = useState(false);
+  const [showMemberManager, setShowMemberManager] = useState(false);
+  const [memberSearch, setMemberSearch] = useState('');
+  const [selectedMemberIds, setSelectedMemberIds] = useState<string[]>([]);
+  const [removeScope, setRemoveScope] = useState<RemoveCircleMembersScope>('circle');
   const eventTimeline = useMemo(() => buildEventTimeline(events.filter(isEventLatestVisible)), [events]);
   const visibleSlots = useMemo(
     () => slots.filter((slot) => slot.status !== 'cancelled' && !isSlotExpired(slot)),
     [slots],
   );
+  const removableMembers = useMemo(
+    () => members.filter((member) => member.role !== 'owner'),
+    [members],
+  );
+  const filteredRemovableMembers = useMemo(() => {
+    const keyword = memberSearch.trim().toLowerCase();
+    if (!keyword) {
+      return removableMembers;
+    }
+    return removableMembers.filter((member) => member.label.toLowerCase().includes(keyword));
+  }, [memberSearch, removableMembers]);
   const slotBookingCounts = useMemo(
     () => visibleSlots.reduce(
       (counts, slot) => {
@@ -286,6 +315,116 @@ export function CircleDetailScreen({
       cancelled = true;
     };
   }, [circleId, userId, unreadRefreshKey]);
+
+  const toggleSelectedMember = (memberId: string) => {
+    setSelectedMemberIds((current) => (
+      current.includes(memberId)
+        ? current.filter((id) => id !== memberId)
+        : [...current, memberId]
+    ));
+  };
+
+  const refreshMembers = async () => {
+    const nextMembers = await listCircleMembers(circleId, userId);
+    setMembers(nextMembers);
+    setSelectedMemberIds((current) => current.filter((id) => nextMembers.some((member) => member.userId === id)));
+  };
+
+  const handleLeaveCircle = () => {
+    if (!circle) {
+      return;
+    }
+    Alert.alert('退出密友圈', `真要退 ${circle.circleName} 圈嗎？`, [
+      { text: '要不再想想', style: 'cancel' },
+      {
+        text: '後會有期!',
+        style: 'destructive',
+        onPress: async () => {
+          try {
+            setActionBusy(true);
+            await leaveCircle(circle.id);
+            await onMembershipChanged?.();
+            Alert.alert('退出密友圈', '已退出這個密友圈。');
+            onBack();
+          } catch (err) {
+            Alert.alert('退圈失敗', formatErrorMessage(err));
+          } finally {
+            setActionBusy(false);
+          }
+        },
+      },
+    ]);
+  };
+
+  const handleHushPress = () => {
+    if (!circle) {
+      return;
+    }
+    if (circle.role === 'owner') {
+      setShowMemberManager((current) => !current);
+      return;
+    }
+    handleLeaveCircle();
+  };
+
+  const handleRemoveSelectedMembers = () => {
+    if (!circle || selectedMemberIds.length === 0) {
+      return;
+    }
+    const scopeText = removeScope === 'owner_circles' ? '圈主所有圈' : '此圈';
+    Alert.alert('移除成員', `確定要從${scopeText}移除 ${selectedMemberIds.length} 位成員嗎？`, [
+      { text: '取消', style: 'cancel' },
+      {
+        text: '移除',
+        style: 'destructive',
+        onPress: async () => {
+          try {
+            setActionBusy(true);
+            await removeCircleMembers({
+              circleId: circle.id,
+              userIds: selectedMemberIds,
+              scope: removeScope,
+            });
+            await refreshMembers();
+            await onMembershipChanged?.();
+            setShowMemberManager(false);
+            setMemberSearch('');
+            Alert.alert('移除成員', '已更新成員名單。');
+          } catch (err) {
+            Alert.alert('移除失敗', formatErrorMessage(err));
+          } finally {
+            setActionBusy(false);
+          }
+        },
+      },
+    ]);
+  };
+
+  const handleRemoveCircle = () => {
+    if (!circle) {
+      return;
+    }
+    Alert.alert('移除密友圈', `確定要移除「${circle.circleName}」整個圈嗎？圈內成員、邀請與活動會一併移除。`, [
+      { text: '取消', style: 'cancel' },
+      {
+        text: '移除整個圈',
+        style: 'destructive',
+        onPress: async () => {
+          try {
+            setActionBusy(true);
+            await removeCircle(circle.id);
+            await onMembershipChanged?.();
+            Alert.alert('移除密友圈', '已移除這個密友圈。');
+            onBack();
+          } catch (err) {
+            Alert.alert('移除失敗', formatErrorMessage(err));
+          } finally {
+            setActionBusy(false);
+          }
+        },
+      },
+    ]);
+  };
 
   if (loading) {
     return (
@@ -401,7 +540,77 @@ export function CircleDetailScreen({
           <TouchableOpacity style={styles.actionBtn} onPress={() => onInviteFriend(circle.id, circle.circleName)}>
             <Text style={styles.actionText}>+ 密友</Text>
           </TouchableOpacity>
+          <TouchableOpacity style={[styles.actionBtn, styles.hushBtn]} onPress={handleHushPress} disabled={actionBusy}>
+            <Text style={styles.hushText}>噓</Text>
+          </TouchableOpacity>
         </View>
+
+        {circle.role === 'owner' && showMemberManager ? (
+          <View style={styles.managerBox}>
+            <Text style={styles.placeholderTitle}>移除成員</Text>
+            <TextInput
+              style={styles.input}
+              value={memberSearch}
+              onChangeText={setMemberSearch}
+              placeholder="搜尋成員"
+              editable={!actionBusy}
+            />
+            <View style={styles.scopeRow}>
+              <TouchableOpacity
+                style={[styles.scopeBtn, removeScope === 'circle' && styles.scopeBtnActive]}
+                onPress={() => setRemoveScope('circle')}
+                disabled={actionBusy}
+              >
+                <Text style={[styles.scopeText, removeScope === 'circle' && styles.scopeTextActive]}>只移除此圈</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.scopeBtn, removeScope === 'owner_circles' && styles.scopeBtnActive]}
+                onPress={() => setRemoveScope('owner_circles')}
+                disabled={actionBusy}
+              >
+                <Text style={[styles.scopeText, removeScope === 'owner_circles' && styles.scopeTextActive]}>圈主所有圈</Text>
+              </TouchableOpacity>
+            </View>
+            {filteredRemovableMembers.length === 0 ? (
+              <Text style={styles.placeholderMuted}>沒有可移除的成員</Text>
+            ) : (
+              filteredRemovableMembers.map((member) => {
+                const selected = selectedMemberIds.includes(member.userId);
+                return (
+                  <TouchableOpacity
+                    key={member.userId}
+                    style={styles.memberSelectRow}
+                    onPress={() => toggleSelectedMember(member.userId)}
+                    disabled={actionBusy}
+                  >
+                    <Text style={styles.memberSelectMark}>{selected ? '☑' : '☐'}</Text>
+                    <Text style={styles.memberSelectLabel}>{member.label}</Text>
+                  </TouchableOpacity>
+                );
+              })
+            )}
+            <View style={styles.managerActionRow}>
+              <View style={styles.managerActionBtn}>
+                <Button
+                  title={`移除選取成員${selectedMemberIds.length ? ` (${selectedMemberIds.length})` : ''}`}
+                  onPress={handleRemoveSelectedMembers}
+                  disabled={actionBusy || selectedMemberIds.length === 0}
+                  color="#dc2626"
+                />
+              </View>
+              <View style={styles.managerActionBtn}>
+                <Button title="取消" onPress={() => setShowMemberManager(false)} disabled={actionBusy} color="#64748b" />
+              </View>
+            </View>
+            <TouchableOpacity
+              style={[styles.removeCircleBtn, actionBusy && styles.disabledAction]}
+              onPress={handleRemoveCircle}
+              disabled={actionBusy}
+            >
+              <Text style={styles.removeCircleText}>移除整個圈</Text>
+            </TouchableOpacity>
+          </View>
+        ) : null}
 
         <View style={styles.backBtn}>
           <Button title="返回首頁" onPress={onBack} />
@@ -508,6 +717,95 @@ const styles = StyleSheet.create({
     color: '#4f46e5',
     fontWeight: '700',
     fontSize: 12,
+  },
+  hushBtn: {
+    backgroundColor: '#fff7ed',
+  },
+  hushText: {
+    color: '#111827',
+    fontWeight: '800',
+    fontSize: 12,
+  },
+  managerBox: {
+    borderWidth: 1,
+    borderColor: '#fde68a',
+    backgroundColor: '#fffbeb',
+    borderRadius: 10,
+    padding: 12,
+    marginBottom: 16,
+  },
+  input: {
+    backgroundColor: '#ffffff',
+    borderColor: '#cbd5e1',
+    borderRadius: 8,
+    borderWidth: 1,
+    fontSize: 14,
+    marginTop: 10,
+    padding: 10,
+  },
+  scopeRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginTop: 10,
+  },
+  scopeBtn: {
+    backgroundColor: '#f1f5f9',
+    borderRadius: 8,
+    flex: 1,
+    paddingHorizontal: 8,
+    paddingVertical: 8,
+  },
+  scopeBtnActive: {
+    backgroundColor: '#2563eb',
+  },
+  scopeText: {
+    color: '#334155',
+    fontSize: 12,
+    fontWeight: '700',
+    textAlign: 'center',
+  },
+  scopeTextActive: {
+    color: '#ffffff',
+  },
+  memberSelectRow: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: 8,
+    paddingVertical: 8,
+  },
+  memberSelectMark: {
+    color: '#2563eb',
+    fontSize: 16,
+    fontWeight: '800',
+  },
+  memberSelectLabel: {
+    color: '#334155',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  managerActionRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginTop: 10,
+  },
+  managerActionBtn: {
+    flex: 1,
+  },
+  removeCircleBtn: {
+    alignItems: 'center',
+    backgroundColor: '#fee2e2',
+    borderRadius: 8,
+    marginTop: 12,
+    paddingHorizontal: 10,
+    paddingVertical: 10,
+  },
+  removeCircleText: {
+    color: '#b91c1c',
+    fontSize: 13,
+    fontWeight: '800',
+  },
+  disabledAction: {
+    opacity: 0.5,
   },
   errorTitle: {
     fontSize: 16,

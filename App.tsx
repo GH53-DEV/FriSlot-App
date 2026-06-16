@@ -1378,6 +1378,7 @@ export default function App() {
         onCreateSlot={(circleId) => startCreateFlow('slot', [circleId], true)}
         onCreateEvent={(circleId) => startCreateFlow('event', [circleId], true)}
         onInviteFriend={inviteFriendFromCircle}
+        onMembershipChanged={() => refreshPostAuthRoute(session)}
         onOpenSlot={(slotId, unreadCount, relatedTargetIds) => {
           setActiveDiscussion(null);
           setActiveSlotId(slotId);

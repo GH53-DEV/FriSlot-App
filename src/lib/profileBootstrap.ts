@@ -79,6 +79,7 @@ export async function userIsCircleMember(circleId: string, uid: string): Promise
     .select('id')
     .eq('circle_ref', circleId)
     .eq('user_id', uid)
+    .eq('status', 'active')
     .limit(1)
     .maybeSingle();
 

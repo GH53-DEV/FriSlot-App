@@ -18,6 +18,8 @@ export type CircleMemberSummary = {
   label: string;
 };
 
+export type RemoveCircleMembersScope = 'circle' | 'owner_circles';
+
 type UserLabelRow = {
   uid: string;
   email: string | null;
@@ -242,4 +244,41 @@ export async function getCircleForUser(uid: string, circleId: string): Promise<C
 
 export async function listCircleMembers(circleId: string, viewerId?: string): Promise<CircleMemberSummary[]> {
   return listCircleMemberLabels(circleId, viewerId);
+}
+
+export async function leaveCircle(circleId: string): Promise<void> {
+  const { error } = await supabase.rpc('leave_circle', {
+    p_circle_id: circleId,
+  });
+
+  if (error) {
+    throw error;
+  }
+}
+
+export async function removeCircleMembers(input: {
+  circleId: string;
+  userIds: string[];
+  scope: RemoveCircleMembersScope;
+}): Promise<number> {
+  const { data, error } = await supabase.rpc('remove_circle_members', {
+    p_circle_id: input.circleId,
+    p_user_ids: input.userIds,
+    p_scope: input.scope,
+  });
+
+  if (error) {
+    throw error;
+  }
+  return Number(data ?? 0);
+}
+
+export async function removeCircle(circleId: string): Promise<void> {
+  const { error } = await supabase.rpc('remove_circle', {
+    p_circle_id: circleId,
+  });
+
+  if (error) {
+    throw error;
+  }
 }
