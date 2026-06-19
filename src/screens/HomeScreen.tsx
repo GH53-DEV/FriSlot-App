@@ -15,6 +15,7 @@ type HomeScreenProps = {
   onCreateSlot: () => void;
   onCreateEvent: () => void;
   onCreateCircle: () => void;
+  onOpenWhoAmI: () => void;
   onOpenCircles: () => void;
   onOpenSlots: () => void;
   onOpenEvents: () => void;
@@ -35,6 +36,7 @@ export function HomeScreen({
   onCreateSlot,
   onCreateEvent,
   onCreateCircle,
+  onOpenWhoAmI,
   onOpenCircles,
   onOpenSlots,
   onOpenEvents,
@@ -129,6 +131,9 @@ export function HomeScreen({
           </TouchableOpacity>
           <TouchableOpacity style={styles.fab} onPress={onCreateCircle}>
             <Text style={styles.fabText}>+ 新密友圈</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={[styles.fab, styles.whoAmIFab]} onPress={onOpenWhoAmI}>
+            <Text style={[styles.fabText, styles.whoAmIFabText]}>Who am I</Text>
           </TouchableOpacity>
         </View>
 
@@ -308,10 +313,21 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
     paddingHorizontal: 10,
     borderRadius: 8,
+    minWidth: '47%',
+    alignItems: 'center',
   },
   fabText: {
     fontSize: 12,
     color: '#64748b',
+  },
+  whoAmIFab: {
+    backgroundColor: '#fff7ed',
+    borderWidth: 1,
+    borderColor: '#fdba74',
+  },
+  whoAmIFabText: {
+    color: '#c2410c',
+    fontWeight: '700',
   },
   tabBar: {
     flexDirection: 'row',

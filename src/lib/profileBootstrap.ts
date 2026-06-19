@@ -112,6 +112,26 @@ export type UserProfilePrefill = {
   mobile: string;
 };
 
+export function formatUserDisplayLabel(
+  profile: UserProfilePrefill | null | undefined,
+  fallbackEmail?: string | null,
+  fallbackUid?: string,
+): string {
+  const displayName = profile?.displayName?.trim();
+  if (displayName) {
+    return displayName;
+  }
+  const realName = profile?.realName?.trim();
+  if (realName) {
+    return realName;
+  }
+  const email = profile?.email?.trim() || fallbackEmail?.trim();
+  if (email) {
+    return email;
+  }
+  return fallbackUid ?? '密友';
+}
+
 export async function fetchUserProfilePrefill(uid: string): Promise<UserProfilePrefill | null> {
   const { data, error } = await supabase
     .from(T.users)
@@ -131,6 +151,20 @@ export async function fetchUserProfilePrefill(uid: string): Promise<UserProfileP
     displayName: String(data.display_name ?? ''),
     mobile: String(data.mobile ?? ''),
   };
+}
+
+export async function updateUserProfile(input: {
+  displayName: string;
+  mobile: string;
+}): Promise<void> {
+  const { error } = await supabase.rpc('update_my_user_profile', {
+    p_display_name: input.displayName.trim(),
+    p_mobile: input.mobile.trim(),
+  });
+
+  if (error) {
+    throw error;
+  }
 }
 
 export type InvitationByTokenRow = {

@@ -3,6 +3,7 @@ import {
   ActivityIndicator,
   Alert,
   Button,
+  Modal,
   ScrollView,
   StyleSheet,
   Text,
@@ -230,6 +231,7 @@ export function CircleDetailScreen({
   const [memberSearch, setMemberSearch] = useState('');
   const [selectedMemberIds, setSelectedMemberIds] = useState<string[]>([]);
   const [removeScope, setRemoveScope] = useState<RemoveCircleMembersScope>('circle');
+  const [showLeaveConfirm, setShowLeaveConfirm] = useState(false);
   const eventTimeline = useMemo(() => buildEventTimeline(events.filter(isEventLatestVisible)), [events]);
   const visibleSlots = useMemo(
     () => slots.filter((slot) => slot.status !== 'cancelled' && !isSlotExpired(slot)),
@@ -334,26 +336,25 @@ export function CircleDetailScreen({
     if (!circle) {
       return;
     }
-    Alert.alert('退出密友圈', `真要退 ${circle.circleName} 圈嗎？`, [
-      { text: '要不再想想', style: 'cancel' },
-      {
-        text: '後會有期!',
-        style: 'destructive',
-        onPress: async () => {
-          try {
-            setActionBusy(true);
-            await leaveCircle(circle.id);
-            await onMembershipChanged?.();
-            Alert.alert('退出密友圈', '已退出這個密友圈。');
-            onBack();
-          } catch (err) {
-            Alert.alert('退圈失敗', formatErrorMessage(err));
-          } finally {
-            setActionBusy(false);
-          }
-        },
-      },
-    ]);
+    setShowLeaveConfirm(true);
+  };
+
+  const confirmLeaveCircle = async () => {
+    if (!circle) {
+      return;
+    }
+    try {
+      setActionBusy(true);
+      await leaveCircle(circle.id);
+      await onMembershipChanged?.();
+      setShowLeaveConfirm(false);
+      Alert.alert('退出密友圈', '已退出這個密友圈。');
+      onBack();
+    } catch (err) {
+      Alert.alert('退圈失敗', formatErrorMessage(err));
+    } finally {
+      setActionBusy(false);
+    }
   };
 
   const handleHushPress = () => {
@@ -448,6 +449,7 @@ export function CircleDetailScreen({
   }
 
   return (
+    <>
     <ScrollView contentContainerStyle={styles.scroll}>
       <View style={styles.panel}>
         <Text style={styles.title}>{circle.circleName}</Text>
@@ -617,6 +619,41 @@ export function CircleDetailScreen({
         </View>
       </View>
     </ScrollView>
+
+    <Modal
+      visible={showLeaveConfirm}
+      transparent
+      animationType="fade"
+      onRequestClose={() => {
+        if (!actionBusy) {
+          setShowLeaveConfirm(false);
+        }
+      }}
+    >
+      <View style={styles.modalBackdrop}>
+        <View style={styles.confirmCard}>
+          <Text style={styles.confirmTitle}>退出密友圈</Text>
+          <Text style={styles.confirmMessage}>真要退 {circle?.circleName} 圈嗎？</Text>
+          <View style={styles.confirmActions}>
+            <TouchableOpacity
+              style={[styles.confirmBtn, styles.confirmBtnCancel, actionBusy && styles.disabledAction]}
+              onPress={() => setShowLeaveConfirm(false)}
+              disabled={actionBusy}
+            >
+              <Text style={styles.confirmBtnCancelText}>要不再想想</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.confirmBtn, styles.confirmBtnDanger, actionBusy && styles.disabledAction]}
+              onPress={() => void confirmLeaveCircle()}
+              disabled={actionBusy}
+            >
+              <Text style={styles.confirmBtnDangerText}>後會有期!</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </View>
+    </Modal>
+    </>
   );
 }
 
@@ -806,6 +843,66 @@ const styles = StyleSheet.create({
   },
   disabledAction: {
     opacity: 0.5,
+  },
+  modalBackdrop: {
+    alignItems: 'center',
+    backgroundColor: 'rgba(15, 23, 42, 0.45)',
+    flex: 1,
+    justifyContent: 'center',
+    padding: 24,
+  },
+  confirmCard: {
+    backgroundColor: '#ffffff',
+    borderRadius: 12,
+    maxWidth: 360,
+    padding: 20,
+    width: '100%',
+  },
+  confirmTitle: {
+    color: '#0f172a',
+    fontSize: 18,
+    fontWeight: '700',
+    marginBottom: 10,
+    textAlign: 'center',
+  },
+  confirmMessage: {
+    color: '#334155',
+    fontSize: 15,
+    lineHeight: 22,
+    marginBottom: 16,
+    textAlign: 'center',
+  },
+  confirmActions: {
+    flexDirection: 'row',
+    gap: 10,
+  },
+  confirmBtn: {
+    alignItems: 'center',
+    borderRadius: 10,
+    borderWidth: 1,
+    flex: 1,
+    paddingHorizontal: 10,
+    paddingVertical: 12,
+  },
+  confirmBtnCancel: {
+    backgroundColor: '#f8fafc',
+    borderColor: '#cbd5e1',
+  },
+  confirmBtnDanger: {
+    backgroundColor: '#fee2e2',
+    borderColor: '#fca5a5',
+  },
+  confirmBtnCancelText: {
+    color: '#334155',
+    fontSize: 14,
+    fontWeight: '700',
+    textAlign: 'center',
+  },
+  confirmBtnDangerText: {
+    color: '#b91c1c',
+    fontSize: 14,
+    fontWeight: '800',
+    textAlign: 'center',
   },
   errorTitle: {
     fontSize: 16,

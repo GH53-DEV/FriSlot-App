@@ -5,6 +5,7 @@
   "scripts": {
     "start": "expo start --lan",
     "start:lan": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/start-lan.ps1",
+    "start:lan-no-qr": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/start-lan.ps1 -NoQr",
     "fix:lan": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/fix-lan-network.ps1",
     "start:tunnel": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/start-tunnel.ps1",
     "android": "expo start --android",

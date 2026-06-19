@@ -145,6 +145,13 @@ function statusLabel(status: string): string {
   }
 }
 
+function eventParticipantStatusLabel(participant: { userId: string; status: string }, createdBy: string): string {
+  if (participant.userId === createdBy && participant.status === 'joined') {
+    return '主揪';
+  }
+  return statusLabel(participant.status);
+}
+
 function isEventFull(event: EventSummary): boolean {
   return Boolean(event.maxPeople && event.participantCount >= event.maxPeople);
 }
@@ -747,7 +754,7 @@ export function CreateEventScreen({
   const [budgetType, setBudgetType] = useState<'per_person' | 'total'>('per_person');
   const [budgetAmount, setBudgetAmount] = useState('');
   const [description, setDescription] = useState('');
-  const [eventDeadline, setEventDeadline] = useState(() => selectedDates[0] ?? todayIso());
+  const [eventDeadline, setEventDeadline] = useState('');
   const [selectedCircleIds, setSelectedCircleIds] = useState<string[]>(() =>
     defaultCircleIds && defaultCircleIds.length > 0 ? defaultCircleIds : circles.length === 1 ? [circles[0].id] : [],
   );
@@ -776,7 +783,8 @@ export function CreateEventScreen({
   const handleCreate = async () => {
     const parsedMaxPeople = parseOptionalNumber(maxPeople);
     const parsedBudgetAmount = parseOptionalNumber(budgetAmount);
-    const normalizedDeadline = normalizeDateInput(eventDeadline);
+    const deadlineTrimmed = eventDeadline.trim();
+    const normalizedDeadline = deadlineTrimmed ? normalizeDateInput(eventDeadline) : null;
     if (!title.trim()) {
       Alert.alert('新活動', '請輸入活動主題。');
       return;
@@ -797,12 +805,12 @@ export function CreateEventScreen({
       Alert.alert('新活動', '人數與預算請輸入數字。');
       return;
     }
-    if (!normalizedDeadline) {
-      Alert.alert('新活動', '報名截止日請輸入有效日期，例如 2026-05-29。');
+    if (deadlineTrimmed && !normalizedDeadline) {
+      Alert.alert('新活動', '過時不候請輸入有效日期，例如 2026-05-29。');
       return;
     }
-    if (selectedDates.length > 0 && normalizedDeadline > selectedDates[selectedDates.length - 1]) {
-      Alert.alert('新活動', '報名截止日不可晚於活動日期。');
+    if (normalizedDeadline && selectedDates.length > 0 && normalizedDeadline > selectedDates[selectedDates.length - 1]) {
+      Alert.alert('新活動', '過時不候不可晚於活動日期。');
       return;
     }
 
@@ -888,11 +896,12 @@ export function CreateEventScreen({
           editable={!busy}
           multiline
         />
+        <Text style={styles.inputLabel}>過時不候（選填）</Text>
         <TextInput
           style={styles.input}
           value={eventDeadline}
           onChangeText={setEventDeadline}
-          placeholder="報名截止日（必填，YYYY-MM-DD）"
+          placeholder="YYYY-MM-DD"
           placeholderTextColor="#94a3b8"
           editable={!busy}
         />
@@ -1698,7 +1707,10 @@ export function EventDetailScreen({
   }
 
   const myParticipant = event.participants.find((participant) => participant.userId === userId);
-  const isFull = Boolean(event.maxPeople && event.participantCount >= event.maxPeople && myParticipant?.status !== 'joined');
+  const isJoined = myParticipant?.status === 'joined';
+  const isEventOrganizer = event.createdBy === userId;
+  const cannotLeaveAsOrganizer = isJoined && isEventOrganizer;
+  const isFull = Boolean(event.maxPeople && event.participantCount >= event.maxPeople && !isJoined);
   const eventClosed = !isEventRecruitingVisible(event);
   const eventDateLabel = formatDateRangeLabel(displayDateRange?.startDate ?? event.eventDate, displayDateRange?.endDate ?? event.eventDate);
   const eventCircleName = circleNameById(circles, event.circleRef);
@@ -1730,7 +1742,12 @@ export function EventDetailScreen({
 
         <View style={styles.row}>
           <View style={styles.rowBtn}>
-            <Button title="參加" onPress={() => void handleJoin('joined')} disabled={busy || isFull || eventClosed} />
+            <Button
+              title={isJoined ? '-1' : '+1'}
+              onPress={() => void handleJoin(isJoined ? 'cancelled' : 'joined')}
+              disabled={busy || cannotLeaveAsOrganizer || (!isJoined && (isFull || eventClosed))}
+              color={isJoined ? '#64748b' : undefined}
+            />
           </View>
           <View style={styles.rowBtn}>
             <Button
@@ -1741,18 +1758,13 @@ export function EventDetailScreen({
             />
           </View>
         </View>
-        {myParticipant && myParticipant.status !== 'cancelled' ? (
-          <View style={styles.buttonGap}>
-            <Button title="取消參加" onPress={() => void handleJoin('cancelled')} disabled={busy} color="#64748b" />
-          </View>
-        ) : null}
 
         <Text style={styles.sectionTitle}>成員</Text>
         {event.participants.length === 0 ? <EmptyText>尚無參加者</EmptyText> : null}
         {event.participants.map((participant) => (
           <View key={participant.userId} style={styles.compactRow}>
-            <Text style={styles.cardLine}>{participant.userLabel}</Text>
-            <Text style={styles.badge}>{statusLabel(participant.status)}</Text>
+            <Text style={[styles.cardLine, styles.memberName]}>{participant.userLabel}</Text>
+            <Text style={styles.badge}>{eventParticipantStatusLabel(participant, event.createdBy)}</Text>
           </View>
         ))}
 
@@ -2066,6 +2078,11 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     marginBottom: 12,
     fontSize: 15,
+  },
+  inputLabel: {
+    color: '#64748b',
+    fontSize: 13,
+    marginBottom: 6,
   },
   searchInputWrap: {
     flexDirection: 'row',
@@ -2388,9 +2405,15 @@ const styles = StyleSheet.create({
     borderBottomColor: '#e2e8f0',
     paddingVertical: 8,
   },
+  memberName: {
+    flex: 1,
+    flexShrink: 1,
+    marginRight: 8,
+  },
   badge: {
     fontSize: 12,
     color: '#7c3aed',
     fontWeight: '700',
+    flexShrink: 0,
   },
 });

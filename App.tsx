@@ -31,6 +31,7 @@ import {
   createShareInvitationForCircle,
   fetchUserProfilePrefill,
   fetchInvitationByToken,
+  formatUserDisplayLabel,
   upsertUserFromAuth,
   userExists,
   userHasOwnerCircle,
@@ -80,6 +81,7 @@ import {
   type ProfileCircleFormPayload,
 } from './src/screens/CirclesOnboardingScreen';
 import { HomeScreen } from './src/screens/HomeScreen';
+import { WhoAmIScreen } from './src/screens/WhoAmIScreen';
 import { LoginScreen } from './src/screens/LoginScreen';
 
 WebBrowser.maybeCompleteAuthSession();
@@ -97,7 +99,8 @@ type AppView =
   | 'circles'
   | 'slots'
   | 'events'
-  | 'createCircle';
+  | 'createCircle'
+  | 'whoAmI';
 
 type CreateContext = {
   mode: 'slot' | 'event';
@@ -159,6 +162,12 @@ export default function App() {
     circleName: string;
   } | null>(null);
   const [ownerCircleOfferCircleId, setOwnerCircleOfferCircleId] = useState<string | null>(null);
+  const [userProfile, setUserProfile] = useState<{
+    email: string;
+    realName: string;
+    displayName: string;
+    mobile: string;
+  } | null>(null);
   const [appView, setAppView] = useState<AppView>('home');
   const [accessibleCircles, setAccessibleCircles] = useState<CircleSummary[]>([]);
   const [accessibleCirclesError, setAccessibleCirclesError] = useState<string | null>(null);
@@ -231,6 +240,7 @@ export default function App() {
     if (!current?.user) {
       setHasOwnerCircle(null);
       setHasUserProfile(null);
+      setUserProfile(null);
       setAccessibleCircles([]);
       setAccessibleCirclesError(null);
       return;
@@ -265,6 +275,8 @@ export default function App() {
       }
       setHasOwnerCircle(hasCircle);
       setHasUserProfile(hasProfile);
+      const profile = await fetchUserProfilePrefill(current.user.id);
+      setUserProfile(profile);
       setAccessibleCircles(circles);
       setAccessibleCirclesError(null);
       if (recoveredProfileFromMembership) {
@@ -1262,7 +1274,7 @@ export default function App() {
   const displayedActivityUnreadCount = Object.values(displayedEventUnreadCounts).reduce((total, count) => total + count, 0);
   const displayedSlotUnreadCount = Object.values(displayedSlotUnreadCounts).reduce((total, count) => total + count, 0);
 
-  const userLabel = session?.user.email ?? session?.user.id ?? '';
+  const userLabel = formatUserDisplayLabel(userProfile, session?.user.email, session?.user.id);
 
   let body: ReactNode;
   if (!authHydrated) {
@@ -1624,6 +1636,19 @@ export default function App() {
         onCancel={() => setAppView('home')}
       />
     );
+  } else if (appView === 'whoAmI') {
+    body = (
+      <WhoAmIScreen
+        userId={session.user.id}
+        onSaved={async () => {
+          const profile = await fetchUserProfilePrefill(session.user.id);
+          setUserProfile(profile);
+          const circles = await listAccessibleCircles(session.user.id);
+          setAccessibleCircles(circles);
+        }}
+        onBack={() => setAppView('home')}
+      />
+    );
   } else {
     body = (
       <HomeScreen
@@ -1640,6 +1665,7 @@ export default function App() {
         onCreateSlot={() => startCreateFlow('slot')}
         onCreateEvent={() => startCreateFlow('event')}
         onCreateCircle={() => setAppView('createCircle')}
+        onOpenWhoAmI={() => setAppView('whoAmI')}
         onOpenCircles={() => setAppView('circles')}
         onOpenSlots={() => {
           setCreateContext(null);

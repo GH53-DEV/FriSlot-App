@@ -1,5 +1,6 @@
 param(
-  [int]$Port = 8081
+  [int]$Port = 8081,
+  [switch]$NoQr
 )
 
 function Stop-PortListener {
@@ -45,7 +46,15 @@ if ($wifiProfile -and $wifiProfile.NetworkCategory -eq 'Public') {
 }
 
 $ip = $wifiAddress.IPAddress
+$expoUrl = "exp://$ip`:$Port"
 Write-Host "Expo LAN: $($wifiAddress.InterfaceAlias) -> $ip"
+Write-Host "Expo Go URL: $expoUrl"
+if ($NoQr) {
+  $env:EXPO_NO_QR_CODE = '1'
+  Write-Host 'QR code hidden. In Expo Go, use "Enter URL manually" and paste the Expo Go URL above.'
+} else {
+  Write-Host 'Tip: QR too big? Run npm run start:lan-no-qr, or press E in this terminal to toggle QR.'
+}
 Write-Host "Phone check (same Wi-Fi): http://$ip`:$Port/status"
 Write-Host "Paste that URL in the browser bar. Use ASCII ':' (half-width), not full-width."
 Write-Host "Expected text: packager-status:running"
