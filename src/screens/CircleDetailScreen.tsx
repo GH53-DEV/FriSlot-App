@@ -22,7 +22,7 @@ import {
   type CircleMemberSummary,
   type RemoveCircleMembersScope,
 } from '../lib/circleAccess';
-import { listSlotsForCircle, type SlotSummary } from '../lib/slots';
+import { dedupeSlotsByOwnerDateTime, isSlotExpired, listSlotsForCircle, type SlotSummary } from '../lib/slots';
 import { listEventsForCircle, type EventSummary } from '../lib/events';
 import {
   discussionKey,
@@ -145,18 +145,6 @@ function isEventLatestVisible(event: EventSummary): boolean {
   return event.status !== 'cancelled' && !isEventExpired(event) && (isEventFull(event) || !isEventDeadlinePassed(event));
 }
 
-function isSlotExpired(slot: Pick<SlotSummary, 'slotDate' | 'timeBlock'>): boolean {
-  const today = todayIso();
-  if (slot.slotDate < today) {
-    return true;
-  }
-  if (slot.slotDate > today) {
-    return false;
-  }
-  const now = new Date();
-  return now.getHours() + now.getMinutes() / 60 >= endHour(slot.timeBlock);
-}
-
 function buildEventTimeline(events: EventSummary[]): EventTimelineItem[] {
   const buckets = new Map<string, EventSummary[]>();
   for (const event of events) {
@@ -234,7 +222,9 @@ export function CircleDetailScreen({
   const [showLeaveConfirm, setShowLeaveConfirm] = useState(false);
   const eventTimeline = useMemo(() => buildEventTimeline(events.filter(isEventLatestVisible)), [events]);
   const visibleSlots = useMemo(
-    () => slots.filter((slot) => slot.status !== 'cancelled' && !isSlotExpired(slot)),
+    () => dedupeSlotsByOwnerDateTime(
+      slots.filter((slot) => slot.status !== 'cancelled' && !isSlotExpired(slot)),
+    ),
     [slots],
   );
   const removableMembers = useMemo(
@@ -534,7 +524,13 @@ export function CircleDetailScreen({
 
         <View style={styles.actionRow}>
           <TouchableOpacity style={styles.actionBtn} onPress={() => onCreateSlot(circle.id)}>
-            <Text style={styles.actionText}>+ 悠閒時光</Text>
+            <View style={styles.actionLabelRow}>
+              <View style={styles.actionSymbolStack}>
+                <Text style={styles.actionSymbol}>+</Text>
+                <Text style={styles.actionSymbol}>-</Text>
+              </View>
+              <Text style={styles.actionText}>悠閒時光</Text>
+            </View>
           </TouchableOpacity>
           <TouchableOpacity style={styles.actionBtn} onPress={() => onCreateEvent(circle.id)}>
             <Text style={styles.actionText}>+ 新活動</Text>
@@ -749,6 +745,21 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     paddingVertical: 8,
     paddingHorizontal: 10,
+  },
+  actionLabelRow: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: 4,
+  },
+  actionSymbolStack: {
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  actionSymbol: {
+    color: '#4f46e5',
+    fontSize: 10,
+    fontWeight: '800',
+    lineHeight: 11,
   },
   actionText: {
     color: '#4f46e5',

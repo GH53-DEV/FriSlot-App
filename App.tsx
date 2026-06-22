@@ -55,7 +55,7 @@ import {
   savePendingInviteDeepLink,
 } from './src/lib/pendingInviteStorage';
 import { listVisibleEventsForUser as listEventsForUnreadBadges } from './src/lib/events';
-import { countSlotBookingBucketsForUser, isSlotExpired, listVisibleSlotsForUser } from './src/lib/slots';
+import { countSlotBookingBucketsForUser, isSlotExpired, listVisibleSlotsForUser, type SlotSummary } from './src/lib/slots';
 import {
   discussionKey,
   listDiscussionSummaries,
@@ -192,6 +192,7 @@ export default function App() {
   const [bookedSlotCount, setBookedSlotCount] = useState(0);
   const [unreadRefreshTick, setUnreadRefreshTick] = useState(0);
   const [createContext, setCreateContext] = useState<CreateContext | null>(null);
+  const [cachedUserSlots, setCachedUserSlots] = useState<SlotSummary[]>([]);
   const claimingInviteTokenRef = useRef<string | null>(null);
   const postInviteShareUrlRef = useRef<string | null>(null);
   const inviteBaseUrl = (Constants.expoConfig?.extra?.inviteBaseUrl as string | undefined)
@@ -1006,6 +1007,9 @@ export default function App() {
     lockCircleSelection = false,
   ) => {
     setCreateContext({ mode, circleIds, lockCircleSelection, dates: [] });
+    if (mode === 'slot' && session?.user.id) {
+      void listVisibleSlotsForUser(session.user.id).then(setCachedUserSlots);
+    }
     setAppView('chooseDate');
   };
 
@@ -1148,6 +1152,7 @@ export default function App() {
         if (!cancelled) {
           setSlotDiscussionUnreadCounts(nextSlotDiscussionUnreadCounts);
           setSlotUnreadCount(nextSlotUnreadCount);
+          setCachedUserSlots(visibleSlots);
         }
       } catch (err) {
         if (__DEV__) {
@@ -1413,14 +1418,24 @@ export default function App() {
     body = (
       <ChooseDateScreen
         mode={createContext.mode}
+        userId={createContext.mode === 'slot' ? session.user.id : undefined}
+        initialUserSlots={cachedUserSlots}
         onPickDates={(dates) => {
-          setCreateContext({ ...createContext, dates });
-          setAppView(createContext.mode === 'slot' ? 'createSlot' : 'createEvent');
+          setCreateContext((ctx) => {
+            if (!ctx) {
+              return null;
+            }
+            setAppView(ctx.mode === 'slot' ? 'createSlot' : 'createEvent');
+            return { ...ctx, dates };
+          });
         }}
+        refreshKey={unreadRefreshTick}
+        onBookingsCancelled={() => setUnreadRefreshTick((tick) => tick + 1)}
+        onUserSlotsUpdated={setCachedUserSlots}
         onCancel={returnAfterCreateCancel}
       />
     );
-  } else if (appView === 'createSlot' && createContext?.dates[0]) {
+  } else if (appView === 'createSlot' && createContext && createContext.dates.length > 0) {
     body = (
       <CreateSlotScreen
         userId={session.user.id}
@@ -1429,13 +1444,11 @@ export default function App() {
         defaultCircleIds={createContext.circleIds}
         lockCircleSelection={createContext.lockCircleSelection}
         onCreated={() => {
-          setCreateContext(null);
-          setActiveDiscussion(null);
-          setActiveSlotId(null);
-          setActiveSlotRelatedIds([]);
-          setActiveSlotDateRange(null);
           setUnreadRefreshTick((tick) => tick + 1);
-          setAppView('home');
+          void listVisibleSlotsForUser(session.user.id).then((slots) => {
+            setCachedUserSlots(slots);
+            setAppView('chooseDate');
+          });
         }}
         onCancel={returnAfterCreateCancel}
       />

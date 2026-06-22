@@ -3,6 +3,7 @@ import {
   ActivityIndicator,
   Alert,
   Button,
+  Modal,
   ScrollView,
   StyleSheet,
   Text,
@@ -13,14 +14,27 @@ import {
 import type { CircleSummary } from '../lib/circleAccess';
 import { formatErrorMessage } from '../lib/formatErrorMessage';
 import {
+  applyOptimisticBookSlotUpdate,
+  cancelUserOutgoingBookingsForCreate,
+  collectBookableSlotsForDates,
+  collectOwnSlotIncomingBookings,
+  collectUserCancellableItems,
+  collectUserCreateSlotBookingConflicts,
+  collectUserSlotCalendarHighlights,
   createSlot,
-  createSlotBooking,
+  createSlotBookingWithOwnSlotCleanup,
+  getOwnActiveSlotDuplicate,
   getSlotDetail,
   listVisibleSlotsForUser,
   updateSlotBookingStatus,
+  updateSlotStatus,
   type SlotBooking,
   type SlotDetail,
   type SlotSummary,
+  type OwnSlotIncomingBooking,
+  type UserCreateSlotBookingConflict,
+  type UserCancellableItem,
+  type UserSlotCalendarHighlights,
 } from '../lib/slots';
 import {
   createEvent,
@@ -65,7 +79,8 @@ type GroupedEvent = EventSummary & {
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 function todayIso(): string {
-  return new Date().toISOString().slice(0, 10);
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
 }
 
 function toIsoDate(date: Date): string {
@@ -513,15 +528,102 @@ function CircleSearchMultiSelect({
   );
 }
 
+const BUSY_CANCEL_AUTO_MESSAGE = '不得閒 改天囉';
+
+function formatOwnSlotIncomingBookingLabel(booking: OwnSlotIncomingBooking): string {
+  const statusLabel = booking.status === 'accepted' ? '已預約' : '等待對方確認';
+  return `${formatDateLabel(booking.slotDate)} · ${booking.timeBlock} · ${booking.requesterLabel} · ${statusLabel}`;
+}
+
+async function notifyOutgoingBookingCancellations(
+  cancellations: Array<{ slotId: string; bookingId: string }>,
+  userId: string,
+): Promise<void> {
+  for (const item of cancellations) {
+    const detail = await getSlotDetail(item.slotId);
+    if (!detail) {
+      continue;
+    }
+    const booking = detail.bookings.find((row) => row.id === item.bookingId);
+    if (!booking) {
+      continue;
+    }
+    const participantIds = [detail.createdBy, userId];
+    const targetId = slotDiscussionTargetId(detail.id, participantIds);
+    await ensureSlotDiscussionParticipants({ slotId: detail.id, targetId, participantIds });
+    await createDiscussionMessage({
+      scope: 'slot',
+      targetId,
+      senderId: userId,
+      body: BUSY_CANCEL_AUTO_MESSAGE,
+    });
+  }
+}
+
+async function notifyOwnSlotBookingCancellations(
+  cancellations: Array<{ slotId: string; cancelledBookings: SlotBooking[] }>,
+  userId: string,
+): Promise<void> {
+  for (const result of cancellations) {
+    if (result.cancelledBookings.length === 0) {
+      continue;
+    }
+    const detail = await getSlotDetail(result.slotId);
+    if (!detail) {
+      continue;
+    }
+    for (const booking of result.cancelledBookings) {
+      if (booking.requestedBy === userId) {
+        continue;
+      }
+      const participantIds = [detail.createdBy, booking.requestedBy];
+      const targetId = slotDiscussionTargetId(detail.id, participantIds);
+      await ensureSlotDiscussionParticipants({ slotId: detail.id, targetId, participantIds });
+      await createDiscussionMessage({
+        scope: 'slot',
+        targetId,
+        senderId: userId,
+        body: BUSY_CANCEL_AUTO_MESSAGE,
+      });
+    }
+  }
+}
+
+type ChooseDateFlowStep = 'calendar' | 'bookPick' | 'cancelList';
+
+function emptyCalendarHighlights(): UserSlotCalendarHighlights {
+  return {
+    bookedDates: new Set(),
+    bookedWithOptionsDates: new Set(),
+    bookedFullDates: new Set(),
+    unbookedWithOptionsDates: new Set(),
+    ownAvailabilityDates: new Set(),
+  };
+}
+
+function calendarHighlightsFromSlots(slots: SlotSummary[], uid: string): UserSlotCalendarHighlights {
+  return collectUserSlotCalendarHighlights(slots, uid);
+}
+
 export function ChooseDateScreen({
   mode,
+  userId,
   initialDate,
+  initialUserSlots = [],
+  refreshKey = 0,
   onPickDates,
+  onBookingsCancelled,
+  onUserSlotsUpdated,
   onCancel,
 }: {
   mode: CreateMode;
+  userId?: string;
   initialDate?: string;
+  initialUserSlots?: SlotSummary[];
+  refreshKey?: number;
   onPickDates: (dates: string[]) => void;
+  onBookingsCancelled?: () => void;
+  onUserSlotsUpdated?: (slots: SlotSummary[]) => void;
   onCancel: () => void;
 }) {
   const [cursor, setCursor] = useState(() => {
@@ -529,6 +631,101 @@ export function ChooseDateScreen({
     return Number.isNaN(base.getTime()) ? new Date() : base;
   });
   const [selectedDates, setSelectedDates] = useState<string[]>([]);
+  const [flowStep, setFlowStep] = useState<ChooseDateFlowStep>('calendar');
+  const [userSlots, setUserSlots] = useState<SlotSummary[]>(() => initialUserSlots);
+  const [selectedCancelIds, setSelectedCancelIds] = useState<string[]>([]);
+  const [calendarHighlights, setCalendarHighlights] = useState<UserSlotCalendarHighlights>(() => (
+    userId && initialUserSlots.length > 0
+      ? calendarHighlightsFromSlots(initialUserSlots, userId)
+      : emptyCalendarHighlights()
+  ));
+  const [loadingBookedDates, setLoadingBookedDates] = useState(
+    () => mode === 'slot' && Boolean(userId) && initialUserSlots.length === 0,
+  );
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [pendingBookSlot, setPendingBookSlot] = useState<SlotSummary | null>(null);
+  const [ownSlotIncomingBookings, setOwnSlotIncomingBookings] = useState<OwnSlotIncomingBooking[]>([]);
+  const [selectedKeepBookingIds, setSelectedKeepBookingIds] = useState<string[]>([]);
+
+  const applyUserSlots = (slots: SlotSummary[]) => {
+    if (!userId) {
+      return;
+    }
+    setUserSlots(slots);
+    setCalendarHighlights(calendarHighlightsFromSlots(slots, userId));
+    onUserSlotsUpdated?.(slots);
+  };
+
+  useEffect(() => {
+    if (mode !== 'slot' || !userId || initialUserSlots.length === 0) {
+      return;
+    }
+    setUserSlots(initialUserSlots);
+    setCalendarHighlights(calendarHighlightsFromSlots(initialUserSlots, userId));
+  }, [initialUserSlots, mode, userId]);
+
+  const bookedDates = calendarHighlights.bookedDates;
+  const hasCalendarHighlights = bookedDates.size > 0
+    || calendarHighlights.unbookedWithOptionsDates.size > 0
+    || calendarHighlights.ownAvailabilityDates.size > 0;
+  const showSlotsLoadingHint = loadingBookedDates && userSlots.length === 0;
+  const showCalendarLoadingHint = loadingBookedDates && !hasCalendarHighlights;
+  const cancellableItems = useMemo(
+    () => (userId ? collectUserCancellableItems(userSlots, userId) : []),
+    [userId, userSlots],
+  );
+  const selectedDateSet = useMemo(() => new Set(selectedDates), [selectedDates]);
+  const bookableSlotsForSelection = useMemo(
+    () => (userId ? collectBookableSlotsForDates(userSlots, userId, selectedDates) : []),
+    [userId, userSlots, selectedDates],
+  );
+  const cancellableItemsForSelection = useMemo(
+    () => (
+      selectedDates.length === 0
+        ? []
+        : cancellableItems.filter((item) => selectedDateSet.has(item.slotDate))
+    ),
+    [cancellableItems, selectedDateSet, selectedDates.length],
+  );
+  const allCancelIdsSelected = cancellableItemsForSelection.length > 0
+    && cancellableItemsForSelection.every((item) => selectedCancelIds.includes(item.itemKey));
+
+  useEffect(() => {
+    if (mode !== 'slot' || !userId) {
+      setUserSlots([]);
+      setLoadError(null);
+      setCalendarHighlights(emptyCalendarHighlights());
+      return;
+    }
+    let cancelled = false;
+    const load = async () => {
+      setLoadError(null);
+      setLoadingBookedDates((current) => current || initialUserSlots.length === 0);
+      try {
+        const slots = await listVisibleSlotsForUser(userId);
+        if (!cancelled) {
+          applyUserSlots(slots);
+        }
+      } catch (err) {
+        if (!cancelled) {
+          if (userSlots.length === 0) {
+            setUserSlots([]);
+            setCalendarHighlights(emptyCalendarHighlights());
+          }
+          setLoadError(formatErrorMessage(err));
+        }
+      } finally {
+        if (!cancelled) {
+          setLoadingBookedDates(false);
+        }
+      }
+    };
+    void load();
+    return () => {
+      cancelled = true;
+    };
+  }, [mode, userId, refreshKey]);
 
   const days = useMemo(() => {
     const year = cursor.getFullYear();
@@ -549,74 +746,538 @@ export function ChooseDateScreen({
 
   const monthLabel = `${cursor.getFullYear()}/${String(cursor.getMonth() + 1).padStart(2, '0')}`;
   const title = mode === 'slot' ? '挑日子 - 悠閒時光' : '挑日子 - 新活動';
+  const showFlowSplit = mode === 'slot' && Boolean(userId);
 
   const handleDatePress = (date: string) => {
-    setSelectedDates((current) => {
-      if (current.length === 0 || current.length > 1 || current.includes(date)) {
-        return [date];
-      }
-      return dateRange(current[0], date);
+    let next: string[];
+    if (selectedDates.length === 0 || selectedDates.length > 1 || selectedDates.includes(date)) {
+      next = [date];
+    } else {
+      next = dateRange(selectedDates[0], date);
+    }
+    setSelectedDates(next);
+  };
+
+  const openCancelList = () => {
+    if (selectedDates.length === 0) {
+      return;
+    }
+    setFlowStep('cancelList');
+    setSelectedCancelIds(cancellableItemsForSelection.map((item) => item.itemKey));
+  };
+
+  const openBookPick = () => {
+    setFlowStep('bookPick');
+  };
+
+  const reloadUserSlots = async () => {
+    if (!userId) {
+      return;
+    }
+    const slotsAfter = await listVisibleSlotsForUser(userId);
+    applyUserSlots(slotsAfter);
+  };
+
+  const clearPendingBookSlot = () => {
+    setPendingBookSlot(null);
+    setOwnSlotIncomingBookings([]);
+    setSelectedKeepBookingIds([]);
+  };
+
+  const toggleKeepBookingSelection = (bookingId: string) => {
+    setSelectedKeepBookingIds((current) => (
+      current.includes(bookingId)
+        ? current.filter((id) => id !== bookingId)
+        : [...current, bookingId]
+    ));
+  };
+
+  const executeBookSlot = async (slot: SlotSummary, keepBookingIds: string[]) => {
+    if (!userId) {
+      return;
+    }
+    const circleId = slot.visibleCircleIds[0] ?? slot.sourceCircleRef;
+    if (!circleId) {
+      Alert.alert('悠閒時光', '這個時段沒有可連結的小圈。');
+      return;
+    }
+    try {
+      setBusy(true);
+      const { bookingId, ownSlotCancellations } = await createSlotBookingWithOwnSlotCleanup({
+        slotId: slot.id,
+        circleId,
+        requestedBy: userId,
+        slotDate: slot.slotDate,
+        timeBlock: slot.timeBlock,
+        visibleSlots: userSlots,
+        keepBookingIds,
+      });
+      await notifyOwnSlotBookingCancellations(ownSlotCancellations, userId);
+      applyUserSlots(applyOptimisticBookSlotUpdate(
+        userSlots,
+        slot,
+        userId,
+        bookingId,
+        keepBookingIds,
+      ));
+      Alert.alert('悠閒時光', `已預約 ${slot.createdByLabel} 的 ${formatDateLabel(slot.slotDate)} ${slot.timeBlock}。`);
+      clearPendingBookSlot();
+      void reloadUserSlots();
+      onBookingsCancelled?.();
+    } catch (err) {
+      Alert.alert('預約失敗', formatErrorMessage(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleBookSlotPress = (slot: SlotSummary) => {
+    if (!userId || busy) {
+      return;
+    }
+    const incoming = collectOwnSlotIncomingBookings(userSlots, userId, slot.slotDate, slot.timeBlock);
+    if (incoming.length > 0) {
+      setPendingBookSlot(slot);
+      setOwnSlotIncomingBookings(incoming);
+      setSelectedKeepBookingIds(incoming.map((booking) => booking.bookingId));
+      return;
+    }
+    void executeBookSlot(slot, []);
+  };
+
+  const handlePendingBookConfirm = () => {
+    if (!pendingBookSlot) {
+      return;
+    }
+    void executeBookSlot(pendingBookSlot, selectedKeepBookingIds);
+  };
+
+  const toggleCancelSelection = (itemKey: string) => {
+    setSelectedCancelIds((current) => (
+      current.includes(itemKey)
+        ? current.filter((id) => id !== itemKey)
+        : [...current, itemKey]
+    ));
+  };
+
+  const toggleSelectAllCancellations = () => {
+    setSelectedCancelIds(allCancelIdsSelected
+      ? []
+      : cancellableItemsForSelection.map((item) => item.itemKey));
+  };
+
+  const formatCancellableItemLabel = (item: UserCancellableItem): string => {
+    const dateLabel = formatDateLabel(item.slotDate);
+    if (item.kind === 'ownSlot') {
+      const bookingHint = (item.activeBookingCount ?? 0) > 0
+        ? ` · ${item.activeBookingCount} 人預約中`
+        : '';
+      return `${dateLabel} · ${item.timeBlock} · 我的悠閒時光 · 已開放${bookingHint}`;
+    }
+    const statusLabel = item.status === 'accepted' ? '已預約' : '待確認';
+    return `${dateLabel} · ${item.timeBlock} · ${item.slotOwnerLabel} · ${statusLabel}`;
+  };
+
+  const sendBusyCancelAutoMessage = async (slot: SlotDetail, booking: SlotBooking) => {
+    await sendSlotAutoMessage(slot, booking, BUSY_CANCEL_AUTO_MESSAGE);
+  };
+
+  const sendSlotAutoMessage = async (slot: SlotDetail, booking: SlotBooking, body: string) => {
+    const participantIds = [slot.createdBy, booking.requestedBy];
+    const targetId = slotDiscussionTargetId(slot.id, participantIds);
+    await ensureSlotDiscussionParticipants({ slotId: slot.id, targetId, participantIds });
+    await createDiscussionMessage({
+      scope: 'slot',
+      targetId,
+      senderId: userId ?? booking.requestedBy,
+      body,
     });
   };
+
+  const handleCancelBookings = async () => {
+    if (!userId || selectedCancelIds.length === 0) {
+      return;
+    }
+    const selectedItems = cancellableItemsForSelection.filter((item) => selectedCancelIds.includes(item.itemKey));
+    try {
+      setBusy(true);
+      let cancelledCount = 0;
+      for (const item of selectedItems) {
+        if (item.kind === 'ownSlot') {
+          const slotIds = item.slotIds ?? [item.slotId];
+          for (const slotId of slotIds) {
+            const slot = await getSlotDetail(slotId);
+            if (!slot || slot.createdBy !== userId || slot.status === 'cancelled') {
+              continue;
+            }
+            for (const booking of slot.bookings) {
+              if (!['requested', 'accepted'].includes(booking.status)) {
+                continue;
+              }
+              await sendBusyCancelAutoMessage(slot, booking);
+              await updateSlotBookingStatus(booking.id, 'cancelled');
+            }
+            await updateSlotStatus(slot.id, 'cancelled');
+            cancelledCount += 1;
+          }
+          continue;
+        }
+        const bookingRefs = item.bookingRefs ?? (
+          item.bookingId ? [{ slotId: item.slotId, bookingId: item.bookingId }] : []
+        );
+        for (const ref of bookingRefs) {
+          const slot = await getSlotDetail(ref.slotId);
+          if (!slot) {
+            continue;
+          }
+          const booking = slot.bookings.find((row) => row.id === ref.bookingId);
+          if (
+            !booking
+            || booking.requestedBy !== userId
+            || !['requested', 'accepted'].includes(booking.status)
+          ) {
+            continue;
+          }
+          await sendBusyCancelAutoMessage(slot, booking);
+          await updateSlotBookingStatus(booking.id, 'cancelled');
+          cancelledCount += 1;
+        }
+      }
+      onBookingsCancelled?.();
+      setSelectedCancelIds([]);
+      setFlowStep('calendar');
+      await reloadUserSlots();
+      Alert.alert(
+        '悠閒時光',
+        cancelledCount > 0 ? `已取消 ${cancelledCount} 筆。` : '所選項目沒有可取消的內容。',
+      );
+    } catch (err) {
+      Alert.alert('取消失敗', formatErrorMessage(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleAvailablePress = () => {
+    if (busy || selectedDates.length === 0) {
+      return;
+    }
+    if (bookableSlotsForSelection.length === 0) {
+      onPickDates(selectedDates);
+      return;
+    }
+    openBookPick();
+  };
+
+  const handleCreatePress = () => {
+    if (busy || selectedDates.length === 0) {
+      return;
+    }
+    onPickDates(selectedDates);
+  };
+
+  const renderBookPickList = () => (
+    <>
+      <Text style={styles.selectedDateLabel}>已選：{formatDateListLabel(selectedDates)}</Text>
+      <Text style={styles.sectionTitle}>還有哪些時段可約</Text>
+      {showSlotsLoadingHint ? <Text style={styles.calendarHint}>載入可約時段…</Text> : null}
+      {!showSlotsLoadingHint && bookableSlotsForSelection.length === 0 ? (
+        <EmptyText>所選日期目前沒有別人可約的時段，可直接建立你的悠閒時光。</EmptyText>
+      ) : null}
+      {bookableSlotsForSelection.map((slot) => (
+        <TouchableOpacity
+          key={`${slot.createdBy}|${slot.slotDate}|${slot.timeBlock}`}
+          style={styles.card}
+          onPress={() => handleBookSlotPress(slot)}
+          disabled={busy}
+        >
+          <Text style={styles.cardTitle}>
+            {formatDateLabel(slot.slotDate)} · {slot.timeBlock} · {slot.createdByLabel}
+          </Text>
+          {slot.note ? <Text style={styles.cardLine}>{slot.note}</Text> : null}
+          <Text style={styles.cardLine}>點選預約</Text>
+        </TouchableOpacity>
+      ))}
+      {pendingBookSlot ? (
+        <View style={[styles.flowCard, styles.flowCardSecondary]}>
+          <Text style={styles.flowCardTitle}>你的時段上已有他人預約</Text>
+          <Text style={styles.flowCardHint}>勾選要保留的對象，其餘將取消並通知「不得閒 改天囉」</Text>
+          {ownSlotIncomingBookings.map((booking) => {
+            const selected = selectedKeepBookingIds.includes(booking.bookingId);
+            return (
+              <TouchableOpacity
+                key={booking.itemKey}
+                style={[styles.choiceRow, selected && styles.choiceRowSelected]}
+                onPress={() => toggleKeepBookingSelection(booking.bookingId)}
+                disabled={busy}
+              >
+                <Text style={styles.choiceText}>
+                  {selected ? '✓ ' : ''}
+                  {formatOwnSlotIncomingBookingLabel(booking)}
+                </Text>
+              </TouchableOpacity>
+            );
+          })}
+          <Text style={styles.flowCardHint}>
+            仍要預約 {pendingBookSlot.createdByLabel} 的 {formatDateLabel(pendingBookSlot.slotDate)} {pendingBookSlot.timeBlock}
+          </Text>
+          <View style={styles.flowCardRow}>
+            <TouchableOpacity
+              style={[styles.flowCard, styles.flowCardAction, busy && styles.flowCardDisabled]}
+              onPress={clearPendingBookSlot}
+              disabled={busy}
+            >
+              <Text style={styles.flowCardTitle}>否，返回</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.flowCard, styles.flowCardAction, busy && styles.flowCardDisabled]}
+              onPress={handlePendingBookConfirm}
+              disabled={busy}
+            >
+              <Text style={styles.flowCardTitle}>是，預約</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      ) : null}
+      <TouchableOpacity
+        style={[styles.flowCard, (busy || selectedDates.length === 0) && styles.flowCardDisabled]}
+        onPress={handleCreatePress}
+        disabled={busy || selectedDates.length === 0}
+      >
+        <Text style={styles.flowCardTitle}>挑好了，建立悠閒時光</Text>
+        <Text style={styles.flowCardHint}>走目前挑好了建立流程</Text>
+      </TouchableOpacity>
+      <View style={styles.buttonGap}>
+        <Button
+          title="返回挑日子"
+          onPress={() => {
+            setFlowStep('calendar');
+            void reloadUserSlots();
+          }}
+          color="#64748b"
+          disabled={busy}
+        />
+      </View>
+    </>
+  );
+
+  const renderCancelList = () => (
+    <>
+      <Text style={styles.sectionTitle}>已挑的 booking 日子</Text>
+      {selectedDates.length > 0 ? (
+        <Text style={styles.calendarHint}>已選：{formatDateListLabel(selectedDates)}</Text>
+      ) : null}
+      {showSlotsLoadingHint ? <Text style={styles.calendarHint}>載入預約日子…</Text> : null}
+      {!showSlotsLoadingHint && cancellableItemsForSelection.length === 0 ? (
+        <EmptyText>所選日期沒有可取消的預約或已開放時段</EmptyText>
+      ) : null}
+      {cancellableItemsForSelection.length > 0 ? (
+        <>
+          <TouchableOpacity
+            style={[styles.choiceRow, allCancelIdsSelected && styles.choiceRowSelected]}
+            onPress={toggleSelectAllCancellations}
+            disabled={busy}
+          >
+            <Text style={styles.choiceText}>{allCancelIdsSelected ? '✓ ' : ''}全選</Text>
+          </TouchableOpacity>
+          {cancellableItemsForSelection.map((item) => {
+            const selected = selectedCancelIds.includes(item.itemKey);
+            return (
+              <TouchableOpacity
+                key={item.itemKey}
+                style={[styles.choiceRow, selected && styles.choiceRowSelected]}
+                onPress={() => toggleCancelSelection(item.itemKey)}
+                disabled={busy}
+              >
+                <Text style={styles.choiceText}>
+                  {selected ? '✓ ' : ''}
+                  {formatCancellableItemLabel(item)}
+                </Text>
+              </TouchableOpacity>
+            );
+          })}
+          <TouchableOpacity
+            style={[styles.flowCard, styles.flowCardDanger, (busy || selectedCancelIds.length === 0) && styles.flowCardDisabled]}
+            onPress={() => void handleCancelBookings()}
+            disabled={busy || selectedCancelIds.length === 0}
+          >
+            <Text style={[styles.flowCardTitle, styles.flowCardTitleDanger]}>
+              {busy ? '取消中…' : '不得不取消'}
+            </Text>
+          </TouchableOpacity>
+        </>
+      ) : null}
+      <View style={styles.buttonGap}>
+        <Button
+          title="返回挑日子"
+          onPress={() => {
+            setFlowStep('calendar');
+            setSelectedCancelIds([]);
+            void reloadUserSlots();
+          }}
+          color="#64748b"
+          disabled={busy}
+        />
+      </View>
+    </>
+  );
 
   return (
     <ScrollView contentContainerStyle={styles.scroll}>
       <View style={styles.panel}>
         <Text style={styles.title}>{title}</Text>
-        <View style={styles.monthRow}>
-          <Button
-            title="<"
-            onPress={() => setCursor((current) => new Date(current.getFullYear(), current.getMonth() - 1, 1))}
-          />
-          <Text style={styles.monthLabel}>{monthLabel}</Text>
-          <Button
-            title=">"
-            onPress={() => setCursor((current) => new Date(current.getFullYear(), current.getMonth() + 1, 1))}
-          />
-        </View>
+        {flowStep === 'cancelList' ? renderCancelList() : flowStep === 'bookPick' ? renderBookPickList() : (
+          <>
+            <View style={styles.monthRow}>
+              <Button
+                title="<"
+                onPress={() => setCursor((current) => new Date(current.getFullYear(), current.getMonth() - 1, 1))}
+              />
+              <Text style={styles.monthLabel}>{monthLabel}</Text>
+              <Button
+                title=">"
+                onPress={() => setCursor((current) => new Date(current.getFullYear(), current.getMonth() + 1, 1))}
+              />
+            </View>
 
-        <View style={styles.calendarBox}>
-          <View style={styles.weekRow}>
-            {['日', '一', '二', '三', '四', '五', '六'].map((label) => (
-              <Text key={label} style={styles.weekCell}>
-                {label}
-              </Text>
-            ))}
-          </View>
-          <View style={styles.calendarGrid}>
-            {days.map((cell) => {
-              const selected = Boolean(cell.date && selectedDates.includes(cell.date));
-              return (
-                <TouchableOpacity
-                  key={cell.key}
-                  style={[styles.dayCell, !cell.date && styles.dayCellBlank, selected && styles.dayCellSelected]}
-                  disabled={!cell.date}
-                  onPress={() => cell.date && handleDatePress(cell.date)}
-                >
-                  <Text style={[styles.dayText, selected && styles.dayTextSelected]}>{cell.label}</Text>
-                </TouchableOpacity>
-              );
-            })}
-          </View>
-        </View>
+            <View style={styles.calendarBox}>
+              <View style={styles.weekRow}>
+                {['日', '一', '二', '三', '四', '五', '六'].map((label) => (
+                  <Text key={label} style={styles.weekCell}>
+                    {label}
+                  </Text>
+                ))}
+              </View>
+              <View style={styles.calendarGrid}>
+                {days.map((cell) => {
+                  const booked = Boolean(cell.date && bookedDates.has(cell.date));
+                  const bookedFull = Boolean(cell.date && calendarHighlights.bookedFullDates.has(cell.date));
+                  const bookedWithOptions = Boolean(cell.date && calendarHighlights.bookedWithOptionsDates.has(cell.date));
+                  const unbookedWithOptions = Boolean(cell.date && calendarHighlights.unbookedWithOptionsDates.has(cell.date));
+                  const ownAvailability = Boolean(cell.date && calendarHighlights.ownAvailabilityDates.has(cell.date));
+                  const selected = Boolean(cell.date && selectedDates.includes(cell.date));
+                  return (
+                    <TouchableOpacity
+                      key={cell.key}
+                      style={[
+                        styles.dayCell,
+                        !cell.date && styles.dayCellBlank,
+                        bookedFull && !selected && styles.dayCellBookedFull,
+                        bookedWithOptions && !selected && styles.dayCellBookedPartial,
+                        unbookedWithOptions && !selected && !booked && styles.dayCellUnbookedWithOptions,
+                        ownAvailability && !selected && !booked && !unbookedWithOptions && styles.dayCellOwnAvailability,
+                        selected && styles.dayCellSelected,
+                      ]}
+                      disabled={!cell.date}
+                      onPress={() => cell.date && handleDatePress(cell.date)}
+                    >
+                      <Text style={[
+                        styles.dayText,
+                        bookedFull && !selected && styles.dayTextBookedFull,
+                        bookedWithOptions && !selected && styles.dayTextBookedPartial,
+                        unbookedWithOptions && !selected && !booked && styles.dayTextUnbookedWithOptions,
+                        ownAvailability && !selected && !booked && !unbookedWithOptions && styles.dayTextOwnAvailability,
+                        selected && styles.dayTextSelected,
+                      ]}
+                      >
+                        {cell.label}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+            </View>
 
-        <Text style={styles.calendarHint}>點第一天，再點最後一天，可選擇連續多日。</Text>
-        {selectedDates.length > 0 ? (
-          <Text style={styles.selectedDateLabel}>已選：{formatDateListLabel(selectedDates)}</Text>
-        ) : null}
+            <Text style={styles.calendarHint}>點第一天，再點最後一天，可選擇連續多日。</Text>
+            {mode === 'slot' && (
+              bookedDates.size > 0
+              || calendarHighlights.unbookedWithOptionsDates.size > 0
+              || calendarHighlights.ownAvailabilityDates.size > 0
+            ) ? (
+              <View style={styles.calendarLegend}>
+                {bookedDates.size > 0 ? (
+                  <>
+                    <View style={styles.calendarLegendRow}>
+                      <View style={[styles.calendarLegendSwatch, styles.dayCellBookedPartial]} />
+                      <Text style={styles.calendarLegendText}>已預約（當天還有可約時段）</Text>
+                    </View>
+                    <View style={styles.calendarLegendRow}>
+                      <View style={[styles.calendarLegendSwatch, styles.dayCellBookedFull]} />
+                      <Text style={styles.calendarLegendText}>已預約（當天已無其他可約）</Text>
+                    </View>
+                  </>
+                ) : null}
+                {calendarHighlights.unbookedWithOptionsDates.size > 0 ? (
+                  <View style={styles.calendarLegendRow}>
+                    <View style={[styles.calendarLegendSwatch, styles.dayCellUnbookedWithOptions]} />
+                    <Text style={styles.calendarLegendText}>未預約（當天還有可約時段）</Text>
+                  </View>
+                ) : null}
+                {calendarHighlights.ownAvailabilityDates.size > 0 ? (
+                  <View style={styles.calendarLegendRow}>
+                    <View style={[styles.calendarLegendSwatch, styles.dayCellOwnAvailability]} />
+                    <Text style={styles.calendarLegendText}>已開放（我的悠閒時光）</Text>
+                  </View>
+                ) : null}
+              </View>
+            ) : null}
+            {loadError ? <Text style={styles.error}>{loadError}</Text> : null}
+            {showCalendarLoadingHint ? <Text style={styles.calendarHint}>載入預約日子…</Text> : null}
+            {selectedDates.length > 0 ? (
+              <Text style={styles.selectedDateLabel}>已選：{formatDateListLabel(selectedDates)}</Text>
+            ) : null}
+
+            {showFlowSplit ? (
+              <>
+                <Text style={styles.calendarHint}>選好日期後，請先分流：</Text>
+                <View style={styles.flowCardRow}>
+                  <TouchableOpacity
+                    style={[
+                      styles.flowCard,
+                      (busy || selectedDates.length === 0) && styles.flowCardDisabled,
+                    ]}
+                    onPress={handleAvailablePress}
+                    disabled={busy || selectedDates.length === 0}
+                  >
+                    <Text style={styles.flowCardTitle}>有空，想約人</Text>
+                    <Text style={styles.flowCardHint}>走目前挑好了建立流程</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[
+                      styles.flowCard,
+                      styles.flowCardSecondary,
+                      (busy || selectedDates.length === 0 || cancellableItemsForSelection.length === 0) && styles.flowCardDisabled,
+                    ]}
+                    onPress={openCancelList}
+                    disabled={busy || selectedDates.length === 0 || cancellableItemsForSelection.length === 0}
+                  >
+                    <Text style={[styles.flowCardTitle, styles.flowCardTitleSecondary]}>哎呀呀，不得閒</Text>
+                    <Text style={styles.flowCardHint}>勾選要取消的 booking 日子</Text>
+                  </TouchableOpacity>
+                </View>
+              </>
+            ) : (
+              <View style={styles.buttonGap}>
+                <Button
+                  title={mode === 'slot' ? '挑好了' : '下一步'}
+                  onPress={() => onPickDates(selectedDates)}
+                  disabled={selectedDates.length === 0 || busy}
+                />
+              </View>
+            )}
+          </>
+        )}
         <View style={styles.buttonGap}>
-          <Button
-            title="下一步"
-            onPress={() => onPickDates(selectedDates)}
-            disabled={selectedDates.length === 0}
-          />
-        </View>
-        <View style={styles.buttonGap}>
-          <Button title="取消" onPress={onCancel} color="#64748b" />
+          <Button title="取消" onPress={onCancel} color="#64748b" disabled={busy} />
         </View>
       </View>
     </ScrollView>
   );
+}
+
+function formatCreateSlotBookingConflictLabel(conflict: UserCreateSlotBookingConflict): string {
+  const statusLabel = conflict.status === 'requested' ? '等待對方確認' : '已預約';
+  return `${formatDateLabel(conflict.slotDate)} · ${conflict.timeBlock} · ${conflict.slotOwnerLabel} · ${statusLabel}`;
 }
 
 export function CreateSlotScreen({
@@ -642,6 +1303,11 @@ export function CreateSlotScreen({
     defaultCircleIds && defaultCircleIds.length > 0 ? defaultCircleIds : circles.length === 1 ? [circles[0].id] : [],
   );
   const [busy, setBusy] = useState(false);
+  const [bookingConflictPrompt, setBookingConflictPrompt] = useState<{
+    conflicts: UserCreateSlotBookingConflict[];
+    existingSlots: SlotSummary[];
+  } | null>(null);
+  const [selectedKeepConflictBookingIds, setSelectedKeepConflictBookingIds] = useState<string[]>([]);
   const selectableCircles = lockCircleSelection && defaultCircleIds && defaultCircleIds.length > 0
     ? circles.filter((circle) => defaultCircleIds.includes(circle.id))
     : circles;
@@ -651,6 +1317,64 @@ export function CreateSlotScreen({
       current.includes(circleId)
         ? current.filter((id) => id !== circleId)
         : [...current, circleId],
+    );
+  };
+
+  const executeCreate = async (datesToCreate: string[]) => {
+    try {
+      setBusy(true);
+      const normalizedTimeBlock = timeBlock.trim();
+      let firstSlotId: string | null = null;
+      for (const slotDate of datesToCreate) {
+        const slotId = await createSlot({
+          slotDate,
+          timeBlock: normalizedTimeBlock,
+          createdBy: userId,
+          sourceCircleId: lockCircleSelection ? selectedCircleIds[0] : selectedCircleIds[0],
+          visibleCircleIds: selectedCircleIds,
+          note,
+        });
+        firstSlotId = firstSlotId ?? slotId;
+      }
+      if (firstSlotId) {
+        Alert.alert('悠閒時光', '已建立你的悠閒時光。');
+        onCreated(firstSlotId);
+      }
+    } catch (err) {
+      Alert.alert('建立失敗', formatErrorMessage(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const proceedWithDuplicateOwnSlotCheck = async (existingSlots: SlotSummary[]) => {
+    const normalizedTimeBlock = timeBlock.trim();
+    const skippedDates = selectedDates.filter(
+      (slotDate) => getOwnActiveSlotDuplicate(existingSlots, userId, slotDate, normalizedTimeBlock),
+    );
+    const datesToCreate = selectedDates.filter(
+      (slotDate) => !getOwnActiveSlotDuplicate(existingSlots, userId, slotDate, normalizedTimeBlock),
+    );
+    if (skippedDates.length === 0) {
+      await executeCreate(selectedDates);
+      return;
+    }
+    const duplicateRangeLabel = formatDateListLabel(skippedDates);
+    if (datesToCreate.length === 0) {
+      Alert.alert(
+        '悠閒時光',
+        `重複日期 ${duplicateRangeLabel} 略過，沒有其他日期可建立。`,
+        [{ text: '返回前頁', onPress: onCancel }],
+      );
+      return;
+    }
+    Alert.alert(
+      '悠閒時光',
+      `重複日期 ${duplicateRangeLabel} 略過，其餘是否照常建立？`,
+      [
+        { text: '否，返回前頁', style: 'cancel', onPress: onCancel },
+        { text: '是，建立', onPress: () => void executeCreate(datesToCreate) },
+      ],
     );
   };
 
@@ -669,26 +1393,66 @@ export function CreateSlotScreen({
     }
     try {
       setBusy(true);
-      let firstSlotId: string | null = null;
-      for (const slotDate of selectedDates) {
-        const slotId = await createSlot({
-          slotDate,
-          timeBlock,
-          createdBy: userId,
-          sourceCircleId: lockCircleSelection ? selectedCircleIds[0] : selectedCircleIds[0],
-          visibleCircleIds: selectedCircleIds,
-          note,
-        });
-        firstSlotId = firstSlotId ?? slotId;
+      setBookingConflictPrompt(null);
+      const existingSlots = await listVisibleSlotsForUser(userId);
+      const bookingConflicts = collectUserCreateSlotBookingConflicts(
+        existingSlots,
+        userId,
+        selectedDates,
+        timeBlock.trim(),
+      );
+      if (bookingConflicts.length > 0) {
+        setBookingConflictPrompt({ conflicts: bookingConflicts, existingSlots });
+        setSelectedKeepConflictBookingIds(bookingConflicts.map((conflict) => conflict.bookingId));
+        return;
       }
-      if (firstSlotId) {
-        onCreated(firstSlotId);
-      }
+      await proceedWithDuplicateOwnSlotCheck(existingSlots);
     } catch (err) {
       Alert.alert('建立失敗', formatErrorMessage(err));
     } finally {
       setBusy(false);
     }
+  };
+
+  const toggleKeepConflictBookingSelection = (bookingId: string) => {
+    setSelectedKeepConflictBookingIds((current) => (
+      current.includes(bookingId)
+        ? current.filter((id) => id !== bookingId)
+        : [...current, bookingId]
+    ));
+  };
+
+  const handleBookingConflictNo = () => {
+    setBookingConflictPrompt(null);
+    setSelectedKeepConflictBookingIds([]);
+    onCancel();
+  };
+
+  const handleBookingConflictYes = () => {
+    const prompt = bookingConflictPrompt;
+    if (!prompt) {
+      return;
+    }
+    setBookingConflictPrompt(null);
+    void (async () => {
+      try {
+        setBusy(true);
+        const cancelledOutgoing = await cancelUserOutgoingBookingsForCreate(
+          prompt.existingSlots,
+          userId,
+          selectedDates,
+          timeBlock.trim(),
+          selectedKeepConflictBookingIds,
+        );
+        await notifyOutgoingBookingCancellations(cancelledOutgoing, userId);
+        setSelectedKeepConflictBookingIds([]);
+        await proceedWithDuplicateOwnSlotCheck(prompt.existingSlots);
+      } catch (err) {
+        Alert.alert('建立失敗', formatErrorMessage(err));
+      } finally {
+        setBusy(false);
+      }
+    })();
   };
 
   return (
@@ -717,6 +1481,46 @@ export function CreateSlotScreen({
           disabled={busy}
           lockSelection={lockCircleSelection}
         />
+
+        {bookingConflictPrompt ? (
+          <View style={[styles.flowCard, styles.flowCardSecondary]}>
+            <Text style={styles.flowCardTitle}>以下時段已有你的預約</Text>
+            <Text style={styles.flowCardHint}>勾選要保留的對象，其餘將取消並通知「不得閒 改天囉」</Text>
+            {bookingConflictPrompt.conflicts.map((conflict) => {
+              const selected = selectedKeepConflictBookingIds.includes(conflict.bookingId);
+              return (
+                <TouchableOpacity
+                  key={conflict.itemKey}
+                  style={[styles.choiceRow, selected && styles.choiceRowSelected]}
+                  onPress={() => toggleKeepConflictBookingSelection(conflict.bookingId)}
+                  disabled={busy}
+                >
+                  <Text style={styles.choiceText}>
+                    {selected ? '✓ ' : ''}
+                    {formatCreateSlotBookingConflictLabel(conflict)}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+            <Text style={styles.flowCardHint}>仍要新增你的悠閒時光嗎？</Text>
+            <View style={styles.flowCardRow}>
+              <TouchableOpacity
+                style={[styles.flowCard, styles.flowCardAction, busy && styles.flowCardDisabled]}
+                onPress={handleBookingConflictNo}
+                disabled={busy}
+              >
+                <Text style={styles.flowCardTitle}>否，返回前頁</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.flowCard, styles.flowCardAction, busy && styles.flowCardDisabled]}
+                onPress={handleBookingConflictYes}
+                disabled={busy}
+              >
+                <Text style={styles.flowCardTitle}>是，新增</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        ) : null}
 
         <View style={styles.row}>
           <View style={styles.rowBtn}>
@@ -1277,6 +2081,11 @@ export function SlotDetailScreen({
   const [openingDiscussion, setOpeningDiscussion] = useState(false);
   const [pendingBookingActionId, setPendingBookingActionId] = useState<string | null>(null);
   const [showBookingList, setShowBookingList] = useState(false);
+  const [showCancelBookingConfirm, setShowCancelBookingConfirm] = useState(false);
+  const [pendingBookCircleId, setPendingBookCircleId] = useState<string | null>(null);
+  const [pendingBookMessage, setPendingBookMessage] = useState<string | undefined>(undefined);
+  const [ownSlotIncomingBookings, setOwnSlotIncomingBookings] = useState<OwnSlotIncomingBooking[]>([]);
+  const [selectedKeepBookingIds, setSelectedKeepBookingIds] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
 
   const load = async () => {
@@ -1363,19 +2172,76 @@ export function SlotDetailScreen({
     await createDiscussionMessage({ scope: 'slot', targetId, senderId: userId, body });
   };
 
-  const handleBook = async (circleId: string, message?: string) => {
+  const clearPendingBookPrompt = () => {
+    setPendingBookCircleId(null);
+    setPendingBookMessage(undefined);
+    setOwnSlotIncomingBookings([]);
+    setSelectedKeepBookingIds([]);
+  };
+
+  const toggleKeepBookingSelection = (bookingId: string) => {
+    setSelectedKeepBookingIds((current) => (
+      current.includes(bookingId)
+        ? current.filter((id) => id !== bookingId)
+        : [...current, bookingId]
+    ));
+  };
+
+  const executeBook = async (circleId: string, keepBookingIds: string[], message?: string) => {
+    if (!slot) {
+      return;
+    }
     try {
       setBusy(true);
-      await createSlotBooking({ slotId, circleId, requestedBy: userId, message });
+      const { bookingId, ownSlotCancellations } = await createSlotBookingWithOwnSlotCleanup({
+        slotId: slot.id,
+        circleId,
+        requestedBy: userId,
+        slotDate: slot.slotDate,
+        timeBlock: slot.timeBlock,
+        visibleSlots: availableSlots,
+        keepBookingIds,
+        message,
+      });
+      await notifyOwnSlotBookingCancellations(ownSlotCancellations, userId);
+      Alert.alert('悠閒時光', message ? '已送出訊息。' : '已送出預約。');
+      clearPendingBookPrompt();
       await load();
       onBookingChanged?.();
-      Alert.alert('悠閒時光', message ? '已送出訊息。' : '已送出預約。');
     } catch (err) {
       Alert.alert('預約失敗', formatErrorMessage(err));
     } finally {
       setBusy(false);
     }
   };
+
+  const handleBook = (circleId: string, message?: string) => {
+    if (!slot) {
+      return;
+    }
+    const incoming = collectOwnSlotIncomingBookings(
+      availableSlots,
+      userId,
+      slot.slotDate,
+      slot.timeBlock,
+    );
+    if (incoming.length > 0) {
+      setPendingBookCircleId(circleId);
+      setPendingBookMessage(message);
+      setOwnSlotIncomingBookings(incoming);
+      setSelectedKeepBookingIds(incoming.map((booking) => booking.bookingId));
+      return;
+    }
+    void executeBook(circleId, [], message);
+  };
+
+  const handlePendingBookConfirm = () => {
+    if (!pendingBookCircleId) {
+      return;
+    }
+    void executeBook(pendingBookCircleId, selectedKeepBookingIds, pendingBookMessage);
+  };
+
   const handleCancelBooking = async (booking: SlotBooking) => {
     try {
       setBusy(true);
@@ -1477,10 +2343,7 @@ export function SlotDetailScreen({
       return;
     }
     if (existingBooking) {
-      Alert.alert('悠閒時光', '要取消這次預約嗎？', [
-        { text: '先不要', style: 'cancel' },
-        { text: '改天約囉', style: 'destructive', onPress: () => void handleCancelBooking(existingBooking) },
-      ]);
+      setShowCancelBookingConfirm(true);
       return;
     }
     if (bookingCircle) {
@@ -1529,7 +2392,16 @@ export function SlotDetailScreen({
     ]);
   };
 
+  const confirmCancelBooking = () => {
+    if (!existingBooking) {
+      return;
+    }
+    setShowCancelBookingConfirm(false);
+    void handleCancelBooking(existingBooking);
+  };
+
   return (
+    <>
     <ScrollView contentContainerStyle={styles.scroll}>
       <View style={styles.panel}>
         <Text style={styles.title}>悠閒時光</Text>
@@ -1558,6 +2430,48 @@ export function SlotDetailScreen({
                   color={discussionButtonColor}
                 />
               </View>
+            </View>
+          </View>
+        ) : null}
+
+        {pendingBookCircleId && ownSlotIncomingBookings.length > 0 ? (
+          <View style={[styles.flowCard, styles.flowCardSecondary]}>
+            <Text style={styles.flowCardTitle}>你的時段上已有他人預約</Text>
+            <Text style={styles.flowCardHint}>勾選要保留的對象，其餘將取消並通知「不得閒 改天囉」</Text>
+            {ownSlotIncomingBookings.map((booking) => {
+              const selected = selectedKeepBookingIds.includes(booking.bookingId);
+              return (
+                <TouchableOpacity
+                  key={booking.itemKey}
+                  style={[styles.choiceRow, selected && styles.choiceRowSelected]}
+                  onPress={() => toggleKeepBookingSelection(booking.bookingId)}
+                  disabled={busy}
+                >
+                  <Text style={styles.choiceText}>
+                    {selected ? '✓ ' : ''}
+                    {formatOwnSlotIncomingBookingLabel(booking)}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+            <Text style={styles.flowCardHint}>
+              仍要預約 {slot.createdByLabel} 的 {slotDateLabel} {slot.timeBlock}
+            </Text>
+            <View style={styles.flowCardRow}>
+              <TouchableOpacity
+                style={[styles.flowCard, styles.flowCardAction, busy && styles.flowCardDisabled]}
+                onPress={clearPendingBookPrompt}
+                disabled={busy}
+              >
+                <Text style={styles.flowCardTitle}>否，返回</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.flowCard, styles.flowCardAction, busy && styles.flowCardDisabled]}
+                onPress={handlePendingBookConfirm}
+                disabled={busy}
+              >
+                <Text style={styles.flowCardTitle}>是，預約</Text>
+              </TouchableOpacity>
             </View>
           </View>
         ) : null}
@@ -1620,6 +2534,41 @@ export function SlotDetailScreen({
         </View>
       </View>
     </ScrollView>
+
+    <Modal
+      visible={showCancelBookingConfirm}
+      transparent
+      animationType="fade"
+      onRequestClose={() => {
+        if (!busy) {
+          setShowCancelBookingConfirm(false);
+        }
+      }}
+    >
+      <View style={styles.modalBackdrop}>
+        <View style={styles.confirmCard}>
+          <Text style={styles.confirmTitle}>悠閒時光</Text>
+          <Text style={styles.confirmMessage}>要取消這次預約嗎？</Text>
+          <View style={styles.confirmActions}>
+            <TouchableOpacity
+              style={[styles.confirmBtn, styles.confirmBtnCancel, busy && styles.disabledAction]}
+              onPress={() => setShowCancelBookingConfirm(false)}
+              disabled={busy}
+            >
+              <Text style={styles.confirmBtnCancelText}>先不要</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.confirmBtn, styles.confirmBtnDanger, busy && styles.disabledAction]}
+              onPress={confirmCancelBooking}
+              disabled={busy}
+            >
+              <Text style={styles.confirmBtnDangerText}>改天約囉</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </View>
+    </Modal>
+    </>
   );
 }
 
@@ -2049,13 +2998,66 @@ const styles = StyleSheet.create({
   dayCellSelected: {
     backgroundColor: '#2563eb',
   },
+  dayCellBookedPartial: {
+    backgroundColor: '#fef3c7',
+  },
+  dayCellBookedFull: {
+    backgroundColor: '#fdba74',
+  },
+  dayCellUnbookedWithOptions: {
+    backgroundColor: '#ecfdf5',
+  },
+  dayCellOwnAvailability: {
+    backgroundColor: '#dbeafe',
+  },
+  dayCellDisabled: {
+    backgroundColor: '#f1f5f9',
+  },
   dayText: {
     color: '#334155',
     fontSize: 16,
     fontWeight: '600',
   },
+  dayTextBookedPartial: {
+    color: '#a16207',
+  },
+  dayTextBookedFull: {
+    color: '#c2410c',
+    fontWeight: '800',
+  },
+  dayTextUnbookedWithOptions: {
+    color: '#047857',
+  },
+  dayTextOwnAvailability: {
+    color: '#1d4ed8',
+    fontWeight: '700',
+  },
   dayTextSelected: {
     color: '#ffffff',
+  },
+  dayTextDisabled: {
+    color: '#cbd5e1',
+  },
+  calendarLegend: {
+    gap: 6,
+    marginTop: 10,
+  },
+  calendarLegendRow: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: 8,
+  },
+  calendarLegendSwatch: {
+    borderColor: '#cbd5e1',
+    borderRadius: 4,
+    borderWidth: StyleSheet.hairlineWidth,
+    height: 16,
+    width: 16,
+  },
+  calendarLegendText: {
+    color: '#64748b',
+    flex: 1,
+    fontSize: 12,
   },
   calendarHint: {
     color: '#64748b',
@@ -2219,6 +3221,58 @@ const styles = StyleSheet.create({
   },
   buttonGap: {
     marginTop: 16,
+  },
+  flowCardRow: {
+    gap: 10,
+    marginTop: 12,
+  },
+  flowCard: {
+    backgroundColor: '#eff6ff',
+    borderColor: '#2563eb',
+    borderRadius: 12,
+    borderWidth: 1,
+    marginBottom: 10,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+  },
+  flowCardSecondary: {
+    backgroundColor: '#fff7ed',
+    borderColor: '#f97316',
+  },
+  flowCardDanger: {
+    backgroundColor: '#fee2e2',
+    borderColor: '#fca5a5',
+  },
+  flowCardDisabled: {
+    opacity: 0.45,
+  },
+  flowCardTitle: {
+    color: '#1d4ed8',
+    fontSize: 16,
+    fontWeight: '800',
+    marginBottom: 4,
+    textAlign: 'center',
+  },
+  flowCardTitleSecondary: {
+    color: '#c2410c',
+  },
+  flowCardTitleDanger: {
+    color: '#b91c1c',
+  },
+  flowCardHint: {
+    color: '#64748b',
+    fontSize: 12,
+    textAlign: 'center',
+  },
+  flowCardAction: {
+    flex: 1,
+    marginBottom: 0,
+  },
+  conflictLine: {
+    color: '#334155',
+    fontSize: 14,
+    marginBottom: 6,
+    textAlign: 'center',
   },
   card: {
     borderWidth: 1,
@@ -2415,5 +3469,68 @@ const styles = StyleSheet.create({
     color: '#7c3aed',
     fontWeight: '700',
     flexShrink: 0,
+  },
+  disabledAction: {
+    opacity: 0.5,
+  },
+  modalBackdrop: {
+    alignItems: 'center',
+    backgroundColor: 'rgba(15, 23, 42, 0.45)',
+    flex: 1,
+    justifyContent: 'center',
+    padding: 24,
+  },
+  confirmCard: {
+    backgroundColor: '#ffffff',
+    borderRadius: 12,
+    maxWidth: 360,
+    padding: 20,
+    width: '100%',
+  },
+  confirmTitle: {
+    color: '#0f172a',
+    fontSize: 18,
+    fontWeight: '700',
+    marginBottom: 10,
+    textAlign: 'center',
+  },
+  confirmMessage: {
+    color: '#334155',
+    fontSize: 15,
+    lineHeight: 22,
+    marginBottom: 16,
+    textAlign: 'center',
+  },
+  confirmActions: {
+    flexDirection: 'row',
+    gap: 10,
+  },
+  confirmBtn: {
+    alignItems: 'center',
+    borderRadius: 10,
+    borderWidth: 1,
+    flex: 1,
+    paddingHorizontal: 10,
+    paddingVertical: 12,
+  },
+  confirmBtnCancel: {
+    backgroundColor: '#f8fafc',
+    borderColor: '#cbd5e1',
+  },
+  confirmBtnDanger: {
+    backgroundColor: '#fee2e2',
+    borderColor: '#fca5a5',
+  },
+  confirmBtnCancelText: {
+    color: '#334155',
+    fontSize: 14,
+    fontWeight: '700',
+    textAlign: 'center',
+  },
+  confirmBtnDangerText: {
+    color: '#b91c1c',
+    fontSize: 14,
+    fontWeight: '800',
+    textAlign: 'center',
   },
 });

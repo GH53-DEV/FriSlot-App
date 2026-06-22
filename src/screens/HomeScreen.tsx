@@ -124,7 +124,13 @@ export function HomeScreen({
 
         <View style={styles.fabRow}>
           <TouchableOpacity style={styles.fab} onPress={onCreateSlot}>
-            <Text style={styles.fabText}>+ 悠閒時光</Text>
+            <View style={styles.fabLabelRow}>
+              <View style={styles.fabSymbolStack}>
+                <Text style={styles.fabSymbol}>+</Text>
+                <Text style={styles.fabSymbol}>-</Text>
+              </View>
+              <Text style={styles.fabText}>悠閒時光</Text>
+            </View>
           </TouchableOpacity>
           <TouchableOpacity style={styles.fab} onPress={onCreateEvent}>
             <Text style={styles.fabText}>+ 新活動</Text>
@@ -315,6 +321,21 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     minWidth: '47%',
     alignItems: 'center',
+  },
+  fabLabelRow: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: 4,
+  },
+  fabSymbolStack: {
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  fabSymbol: {
+    color: '#64748b',
+    fontSize: 10,
+    fontWeight: '800',
+    lineHeight: 11,
   },
   fabText: {
     fontSize: 12,
