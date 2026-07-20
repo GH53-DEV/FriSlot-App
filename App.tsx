@@ -6,6 +6,8 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import {
   ActivityIndicator,
   Alert,
+  AppState,
+  type AppStateStatus,
   SafeAreaView,
   StyleSheet,
   Text,
@@ -156,6 +158,7 @@ export default function App() {
     mobile: string;
   } | null>(null);
   const [inviteMetaReady, setInviteMetaReady] = useState(false);
+  const [inviteClaimNonce, setInviteClaimNonce] = useState(0);
   /** 新帳號：已建立圈子，依流程圖進入「選擇社群／Email 邀請」步驟 */
   const [inviteAfterCircle, setInviteAfterCircle] = useState<{
     circleId: string;
@@ -194,6 +197,8 @@ export default function App() {
   const [createContext, setCreateContext] = useState<CreateContext | null>(null);
   const [cachedUserSlots, setCachedUserSlots] = useState<SlotSummary[]>([]);
   const claimingInviteTokenRef = useRef<string | null>(null);
+  const acceptedInviteTokenRef = useRef<string | null>(null);
+  acceptedInviteTokenRef.current = acceptedInviteToken;
   const postInviteShareUrlRef = useRef<string | null>(null);
   const inviteBaseUrl = (Constants.expoConfig?.extra?.inviteBaseUrl as string | undefined)
     ?? 'https://frislot.app/invite';
@@ -252,7 +257,8 @@ export default function App() {
       const hasCircle = await userHasOwnerCircle(current.user.id);
       let hasProfile = await userExists(current.user.id);
       let circles = await listAccessibleCircles(current.user.id);
-      const recoveredInvite = circles.length === 0
+      const shouldRecoverInvite = circles.length === 0 || Boolean(acceptedInviteTokenRef.current);
+      const recoveredInvite = shouldRecoverInvite
         ? await claimLatestAcceptedInvitationForUser({
             uid: current.user.id,
             email: current.user.email ?? '',
@@ -460,11 +466,7 @@ export default function App() {
     if (!user || !acceptedInviteToken || !inviteMetaReady) {
       return;
     }
-    if (claimingInviteTokenRef.current === acceptedInviteToken) {
-      return;
-    }
 
-    claimingInviteTokenRef.current = acceptedInviteToken;
     let cancelled = false;
 
     const resolveInviteNavigation = async (circleId: string | null): Promise<boolean> => {
@@ -489,6 +491,10 @@ export default function App() {
     };
 
     const claimNow = async () => {
+      if (claimingInviteTokenRef.current === acceptedInviteToken) {
+        return;
+      }
+      claimingInviteTokenRef.current = acceptedInviteToken;
       let navigated = false;
       try {
         setRouteLoading(true);
@@ -514,22 +520,35 @@ export default function App() {
         if (!cancelled) {
           navigated = await resolveInviteNavigation(pendingInviteCircleId);
           if (!navigated) {
-            Alert.alert('邀請處理失敗', formatErrorMessage(err));
+            const message = formatErrorMessage(err);
+            if (message.includes('請先在邀請頁')) {
+              // Keep token so claim can retry after web accept; do not block the app.
+              if (__DEV__) {
+                console.warn('[invite-claim-waiting-web-accept]', message);
+              }
+            } else {
+              Alert.alert('邀請處理失敗', message);
+            }
           }
         }
       } finally {
+        if (claimingInviteTokenRef.current === acceptedInviteToken) {
+          claimingInviteTokenRef.current = null;
+        }
         if (!cancelled) {
           setRouteLoading(false);
         }
-        claimingInviteTokenRef.current = null;
       }
     };
 
     void claimNow();
     return () => {
       cancelled = true;
+      if (claimingInviteTokenRef.current === acceptedInviteToken) {
+        claimingInviteTokenRef.current = null;
+      }
     };
-  }, [acceptedInviteToken, inviteMetaReady, pendingInviteCircleId, refreshPostAuthRoute, session]);
+  }, [acceptedInviteToken, inviteClaimNonce, inviteMetaReady, pendingInviteCircleId, refreshPostAuthRoute, session]);
 
   const signInWithGoogle = async () => {
     let capturedCallbackUrl: string | null = null;
@@ -1049,8 +1068,22 @@ export default function App() {
       return;
     }
 
+    const userId = session.user.id;
+    let membershipRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+    const scheduleMembershipRefresh = () => {
+      if (membershipRefreshTimer) {
+        clearTimeout(membershipRefreshTimer);
+      }
+      membershipRefreshTimer = setTimeout(() => {
+        void supabase.auth.getSession().then(({ data }) => {
+          void refreshPostAuthRoute(data.session);
+          setUnreadRefreshTick((tick) => tick + 1);
+        });
+      }, 250);
+    };
+
     const channel = supabase
-      .channel(`app-discussion-unread:${session.user.id}`)
+      .channel(`app-live:${userId}`)
       .on(
         'postgres_changes',
         {
@@ -1060,7 +1093,7 @@ export default function App() {
         },
         (payload) => {
           const row = payload.new as { scope?: 'slot' | 'event'; target_id?: string; sender_id?: string };
-          if (row.scope && row.target_id && row.sender_id !== session.user.id) {
+          if (row.scope && row.target_id && row.sender_id !== userId) {
             const key = discussionKey(row.scope, row.target_id);
             setLocallyReadDiscussionKeys((current) => {
               if (!current[key]) {
@@ -1074,12 +1107,37 @@ export default function App() {
           setUnreadRefreshTick((tick) => tick + 1);
         },
       )
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'circle_members',
+        },
+        () => {
+          scheduleMembershipRefresh();
+        },
+      )
       .subscribe();
 
+    const onAppStateChange = (nextState: AppStateStatus) => {
+      if (nextState === 'active') {
+        scheduleMembershipRefresh();
+        if (acceptedInviteTokenRef.current) {
+          setInviteClaimNonce((nonce) => nonce + 1);
+        }
+      }
+    };
+    const appStateSub = AppState.addEventListener('change', onAppStateChange);
+
     return () => {
+      if (membershipRefreshTimer) {
+        clearTimeout(membershipRefreshTimer);
+      }
+      appStateSub.remove();
       void supabase.removeChannel(channel);
     };
-  }, [session?.user.id]);
+  }, [refreshPostAuthRoute, session?.user?.id]);
 
   useEffect(() => {
     const userId = session?.user.id;

@@ -466,7 +466,7 @@
         renderMembers(row.circle_member_nicknames);
         footerEl.textContent = row.card_footer || '';
         installHintEl.textContent = row.install_hint || '接受邀請後，請依下列方式繼續：';
-        statusEl.textContent = `目前狀態：${row.status}`;
+        statusEl.textContent = `目前狀態：${formatStatus(row.status)}`;
 
         if (row.status !== 'pending') {
           responded = true;
@@ -477,6 +477,16 @@
           }
         } else {
           hideActions(false);
+        }
+      }
+
+      function formatStatus(status) {
+        switch (String(status || '').toLowerCase()) {
+          case 'pending': return '待回覆（可接受或拒絕）';
+          case 'accepted': return '已接受';
+          case 'rejected': return '已拒絕';
+          case 'cancelled': return '已取消';
+          default: return status || '';
         }
       }
 
@@ -595,7 +605,7 @@
           errorEl.textContent = '';
           const row = await markRejected();
           responded = true;
-          statusEl.textContent = `目前狀態：${row.status}`;
+          statusEl.textContent = `目前狀態：${formatStatus(row.status)}`;
           hideActions(true);
         } catch (err) {
           errorEl.textContent = formatRpcError(err);
@@ -628,7 +638,7 @@
             status: row.status,
             circle_ref: row.circle_ref || (invite && invite.circle_ref),
           });
-          statusEl.textContent = `目前狀態：${row.status}`;
+          statusEl.textContent = `目前狀態：${formatStatus(row.status)}`;
           show(emailFormEl, false);
           hideActions(true);
           show(installEl, true);
