@@ -242,6 +242,19 @@ export default function App() {
     });
   };
 
+  const refreshAccessibleCircles = useCallback(async (userId: string) => {
+    try {
+      const circles = await listAccessibleCircles(userId);
+      setAccessibleCircles(circles);
+      setAccessibleCirclesError(null);
+    } catch (err) {
+      if (__DEV__) {
+        console.warn('[circles-refresh]', err);
+      }
+      setAccessibleCirclesError(formatErrorMessage(err));
+    }
+  }, []);
+
   const refreshPostAuthRoute = useCallback(async (current: Session | null) => {
     if (!current?.user) {
       setHasOwnerCircle(null);
@@ -1075,10 +1088,8 @@ export default function App() {
         clearTimeout(membershipRefreshTimer);
       }
       membershipRefreshTimer = setTimeout(() => {
-        void supabase.auth.getSession().then(({ data }) => {
-          void refreshPostAuthRoute(data.session);
-          setUnreadRefreshTick((tick) => tick + 1);
-        });
+        void refreshAccessibleCircles(userId);
+        setUnreadRefreshTick((tick) => tick + 1);
       }, 250);
     };
 
@@ -1137,7 +1148,18 @@ export default function App() {
       appStateSub.remove();
       void supabase.removeChannel(channel);
     };
-  }, [refreshPostAuthRoute, session?.user?.id]);
+  }, [refreshAccessibleCircles, session?.user?.id]);
+
+  useEffect(() => {
+    const userId = session?.user?.id;
+    if (!userId) {
+      return;
+    }
+    if (appView !== 'home' && appView !== 'circles') {
+      return;
+    }
+    void refreshAccessibleCircles(userId);
+  }, [appView, refreshAccessibleCircles, session?.user?.id]);
 
   useEffect(() => {
     const userId = session?.user.id;
@@ -1449,11 +1471,15 @@ export default function App() {
           setActiveCircleId(null);
           setActiveCircleUnreadCount(0);
           setAppView('home');
+          void refreshAccessibleCircles(session.user.id);
         }}
         onCreateSlot={(circleId) => startCreateFlow('slot', [circleId], true)}
         onCreateEvent={(circleId) => startCreateFlow('event', [circleId], true)}
         onInviteFriend={inviteFriendFromCircle}
-        onMembershipChanged={() => refreshPostAuthRoute(session)}
+        onMembershipChanged={() => {
+          void refreshAccessibleCircles(session.user.id);
+          void refreshPostAuthRoute(session);
+        }}
         onOpenSlot={(slotId, unreadCount, relatedTargetIds) => {
           setActiveDiscussion(null);
           setActiveSlotId(slotId);

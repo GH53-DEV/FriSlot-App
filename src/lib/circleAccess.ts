@@ -155,22 +155,7 @@ export async function listAccessibleCircles(uid: string): Promise<CircleSummary[
 
   const circleIds = Array.from(byId.keys());
   if (circleIds.length > 0) {
-    const { data: memberRows, error: countErr } = await supabase
-      .from(T.circleMembers)
-      .select('circle_ref, user_id, role')
-      .in('circle_ref', circleIds)
-      .eq('status', 'active');
-
-    if (countErr) {
-      throw countErr;
-    }
-
-    const countsByCircle = new Map<string, number>();
-    for (const row of memberRows ?? []) {
-      const circleId = row.circle_ref as string;
-      countsByCircle.set(circleId, (countsByCircle.get(circleId) ?? 0) + 1);
-    }
-
+    // Use the same security-definer label RPC as CircleDetail so count/labels stay aligned.
     const memberSummariesByCircle = new Map<string, CircleMemberSummary[]>();
     await Promise.all(
       circleIds.map(async (circleId) => {
@@ -179,8 +164,8 @@ export async function listAccessibleCircles(uid: string): Promise<CircleSummary[
     );
 
     for (const circle of byId.values()) {
-      circle.memberCount = Math.max(countsByCircle.get(circle.id) ?? 0, circle.role === 'owner' ? 1 : 0);
       const memberSummaries = memberSummariesByCircle.get(circle.id) ?? [];
+      circle.memberCount = Math.max(memberSummaries.length, circle.role === 'owner' ? 1 : 0);
       const owner = memberSummaries.find((member) => member.role === 'owner');
       circle.ownerLabel = owner?.label ?? '';
       circle.memberLabels = memberSummaries
